@@ -1,0 +1,6 @@
+{
+  "name": "EventPool",
+  "description": "A circular resource-sharing platform for Universiti Malaya student clubs with club inventory, borrowing workflows, sustainability tracking, and admin club management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
