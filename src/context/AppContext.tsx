@@ -1,0 +1,1043 @@
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  ADMIN_ACCOUNT,
+  INITIAL_ACCESS_REQUESTS,
+  INITIAL_CLUBS,
+  INITIAL_EVENTS,
+  INITIAL_REQUESTS,
+  INITIAL_RESOURCES,
+  REFERENCE_TODAY,
+} from '../data/seedData';
+import type {
+  AppView,
+  BorrowRequest,
+  Club,
+  ClubAccessRequest,
+  ClubEvent,
+  CurrentUser,
+  Resource,
+  ResourceAvailability,
+  ResourceCategory,
+} from '../types/eventpool';
+
+const STORAGE_KEY = 'eventpool_um_state_v4';
+
+interface PersistedState {
+  clubs: Club[];
+  events: ClubEvent[];
+  resources: Resource[];
+  requests: BorrowRequest[];
+  accessRequests: ClubAccessRequest[];
+  currentUser: CurrentUser | null;
+}
+
+function loadInitialState(): PersistedState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as PersistedState;
+      if (
+        parsed &&
+        Array.isArray(parsed.clubs) &&
+        Array.isArray(parsed.resources) &&
+        Array.isArray(parsed.events)
+      ) {
+        const seedClubMap = new Map(INITIAL_CLUBS.map((c) => [c.id, c]));
+        return {
+          ...parsed,
+          clubs: parsed.clubs.map((club) => {
+            const seed = seedClubMap.get(club.id);
+            if (!seed) return club;
+            return {
+              ...club,
+              logoUrl: 'logoUrl' in club ? club.logoUrl : seed.logoUrl,
+            };
+          }),
+        };
+      }
+    }
+  } catch {
+    // Fallback to seed data
+  }
+  return {
+    clubs: INITIAL_CLUBS,
+    events: INITIAL_EVENTS,
+    resources: INITIAL_RESOURCES,
+    requests: INITIAL_REQUESTS,
+    accessRequests: INITIAL_ACCESS_REQUESTS,
+    currentUser: null,
+  };
+}
+
+export function getResourceAvailability(
+  resource: Resource,
+  club?: Club
+): ResourceAvailability {
+  if (club && club.status === 'Inactive') return 'Unavailable';
+  if (resource.manualUnavailable || resource.archived) return 'Unavailable';
+  if (resource.availableUnits > 0) return 'Available';
+  if (resource.reservedUnits > 0) return 'Reserved';
+  if (resource.borrowedUnits > 0) return 'Borrowed';
+  return 'Unavailable';
+}
+
+export function isRequestOverdue(req: BorrowRequest): boolean {
+  if (!['Approved', 'Borrowed', 'Return Pending'].includes(req.status)) {
+    return false;
+  }
+  return req.expectedReturnDate < REFERENCE_TODAY;
+}
+
+export function getOverdueDays(req: BorrowRequest): number {
+  if (!isRequestOverdue(req)) return 0;
+  const due = new Date(req.expectedReturnDate).getTime();
+  const today = new Date(REFERENCE_TODAY).getTime();
+  return Math.max(1, Math.round((today - due) / (1000 * 60 * 60 * 24)));
+}
+
+interface CreateClubInput {
+  name: string;
+  acronym: string;
+  categoryFocus: string;
+  description: string;
+  storageLocation: string;
+  contactEmail: string;
+  picPhone: string;
+  representativeName: string;
+  representativeEmail: string;
+  password: string;
+}
+
+interface UpdateClubInput {
+  name: string;
+  acronym: string;
+  categoryFocus: string;
+  description: string;
+  storageLocation: string;
+  contactEmail: string;
+  picPhone: string;
+  representativeName: string;
+  representativeEmail: string;
+  logoUrl?: string;
+}
+
+interface UpdateOwnClubProfileInput {
+  name: string;
+  description: string;
+  contactEmail: string;
+  picPhone: string;
+  storageLocation: string;
+  logoUrl?: string;
+}
+
+interface CreateEventInput {
+  clubId: string;
+  name: string;
+  date: string;
+  purpose: string;
+  description?: string;
+}
+
+interface AddResourceInput {
+  clubId: string;
+  name: string;
+  category: ResourceCategory;
+  condition: 'Excellent' | 'Good' | 'Fair';
+  location: string;
+  totalUnits: number;
+  description: string;
+  remarks: string;
+  estimatedUnitCostRM?: number;
+  estimatedUnitWeightKg?: number;
+  imageUrl: string;
+}
+
+interface SubmitBorrowInput {
+  resourceId: string;
+  eventId?: string;
+  eventName: string;
+  requestedQuantity: number;
+  purpose: string;
+  wouldOtherwisePurchase: boolean;
+  remarks?: string;
+  pickupDate: string;
+  expectedReturnDate: string;
+}
+
+interface LoginResult {
+  ok: boolean;
+  error?: string;
+  code?: 'invalid_credentials' | 'disabled_account' | 'too_many_attempts';
+}
+
+interface AppContextValue {
+  clubs: Club[];
+  events: ClubEvent[];
+  resources: Resource[];
+  requests: BorrowRequest[];
+  accessRequests: ClubAccessRequest[];
+  currentUser: CurrentUser | null;
+  currentView: AppView;
+  selectedClubId: string | null;
+  selectedResourceId: string | null;
+  selectedRequestId: string | null;
+  marketplaceSearch: string;
+  toastMessage: string | null;
+  failedLoginAttempts: number;
+  lockoutRemainingSec: number;
+  setMarketplaceSearch: (value: string) => void;
+  showToast: (msg: string) => void;
+  navigate: (
+    view: AppView,
+    options?: {
+      clubId?: string;
+      resourceId?: string;
+      requestId?: string;
+      search?: string;
+    }
+  ) => void;
+  login: (email: string, password: string) => LoginResult;
+  loginAsDemo: (mode: 'rep' | 'admin') => void;
+  logout: () => void;
+  // Admin club management
+  createClubAccount: (input: CreateClubInput) => { ok: boolean; error?: string; club?: Club };
+  updateClubDetails: (clubId: string, input: UpdateClubInput) => void;
+  updateOwnClubProfile: (clubId: string, input: UpdateOwnClubProfileInput) => { ok: boolean; error?: string };
+  deactivateClub: (clubId: string) => void;
+  reactivateClub: (clubId: string) => void;
+  processAccessRequest: (id: string, action: 'approve' | 'decline') => void;
+  // Events
+  createEvent: (input: CreateEventInput) => ClubEvent;
+  updateEvent: (eventId: string, input: Omit<CreateEventInput, 'clubId'>) => void;
+  // Public access request
+  submitClubAccessRequest: (input: {
+    clubName: string;
+    representativeName: string;
+    email: string;
+  }) => void;
+  // Borrowing & inventory lifecycle
+  submitBorrowRequest: (input: SubmitBorrowInput) => { ok: boolean; error?: string };
+  approveBorrowRequest: (requestId: string) => { ok: boolean; error?: string };
+  rejectBorrowRequest: (requestId: string) => void;
+  cancelBorrowRequest: (requestId: string) => void;
+  markPickedUp: (requestId: string) => void;
+  markReturned: (requestId: string) => void;
+  confirmReturnVerification: (
+    requestId: string,
+    counts: { reusable: number; damaged: number; missing: number }
+  ) => { ok: boolean; error?: string };
+  addResource: (input: AddResourceInput) => Resource;
+  editResourceQuantity: (resourceId: string, newTotal: number) => { ok: boolean; error?: string };
+  toggleResourceAvailability: (resourceId: string) => void;
+  archiveResource: (resourceId: string) => { ok: boolean; blocked?: boolean };
+  resetDemoData: () => void;
+  getClubById: (id?: string | null) => Club | undefined;
+  getResourceById: (id?: string | null) => Resource | undefined;
+  getRequestById: (id?: string | null) => BorrowRequest | undefined;
+}
+
+const AppContext = createContext<AppContextValue | undefined>(undefined);
+
+export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [state, setState] = useState<PersistedState>(loadInitialState);
+  const [currentView, setCurrentView] = useState<AppView>('home');
+  const [selectedClubId, setSelectedClubId] = useState<string | null>(null);
+  const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
+  const [selectedRequestId, setSelectedRequestId] = useState<string | null>(null);
+  const [marketplaceSearch, setMarketplaceSearch] = useState<string>('');
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const [failedLoginAttempts, setFailedLoginAttempts] = useState(0);
+  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
+  const [lockoutRemainingSec, setLockoutRemainingSec] = useState(0);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [state]);
+
+  useEffect(() => {
+    if (!toastMessage) return;
+    const timer = window.setTimeout(() => setToastMessage(null), 3600);
+    return () => window.clearTimeout(timer);
+  }, [toastMessage]);
+
+  useEffect(() => {
+    if (!lockoutUntil) {
+      setLockoutRemainingSec(0);
+      return;
+    }
+    const tick = () => {
+      const diff = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      if (diff <= 0) {
+        setLockoutUntil(null);
+        setLockoutRemainingSec(0);
+        setFailedLoginAttempts(0);
+      } else {
+        setLockoutRemainingSec(diff);
+      }
+    };
+    tick();
+    const interval = window.setInterval(tick, 1000);
+    return () => window.clearInterval(interval);
+  }, [lockoutUntil]);
+
+  const showToast = (msg: string) => setToastMessage(msg);
+
+  const navigate: AppContextValue['navigate'] = (view, options) => {
+    if (options?.clubId !== undefined) setSelectedClubId(options.clubId);
+    if (options?.resourceId !== undefined) setSelectedResourceId(options.resourceId);
+    if (options?.requestId !== undefined) setSelectedRequestId(options.requestId);
+    if (options?.search !== undefined) setMarketplaceSearch(options.search);
+    setCurrentView(view);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+
+  const login: AppContextValue['login'] = (email, password) => {
+    if (lockoutUntil && Date.now() < lockoutUntil) {
+      const secs = Math.ceil((lockoutUntil - Date.now()) / 1000);
+      return {
+        ok: false,
+        code: 'too_many_attempts',
+        error: `Too many failed login attempts. Please wait ${secs}s before trying again or reset your password.`,
+      };
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail || !password) {
+      return {
+        ok: false,
+        code: 'invalid_credentials',
+        error: 'Please enter both your UM email and password.',
+      };
+    }
+
+    if (
+      cleanEmail === ADMIN_ACCOUNT.email.toLowerCase() &&
+      password === ADMIN_ACCOUNT.password
+    ) {
+      setFailedLoginAttempts(0);
+      setLockoutUntil(null);
+      setState((prev) => ({
+        ...prev,
+        currentUser: {
+          role: 'admin',
+          name: ADMIN_ACCOUNT.name,
+          email: ADMIN_ACCOUNT.email,
+        },
+      }));
+      setCurrentView('admin_dashboard');
+      showToast('Signed in as UM System Admin.');
+      return { ok: true };
+    }
+
+    const matchedClub = state.clubs.find(
+      (c) =>
+        c.representativeEmail.toLowerCase() === cleanEmail ||
+        c.contactEmail.toLowerCase() === cleanEmail
+    );
+
+    if (!matchedClub || matchedClub.password !== password) {
+      const nextAttempts = failedLoginAttempts + 1;
+      setFailedLoginAttempts(nextAttempts);
+      if (nextAttempts >= 3) {
+        const until = Date.now() + 30000;
+        setLockoutUntil(until);
+        return {
+          ok: false,
+          code: 'too_many_attempts',
+          error:
+            'Too many failed login attempts (3/3). Login is temporarily locked for 30 seconds.',
+        };
+      }
+      return {
+        ok: false,
+        code: 'invalid_credentials',
+        error: `Invalid UM email or password (${nextAttempts}/3 attempts).`,
+      };
+    }
+
+    if (matchedClub.status === 'Inactive') {
+      return {
+        ok: false,
+        code: 'disabled_account',
+        error: `Account disabled: ${matchedClub.acronym} is currently marked Inactive by UM Admin. Contact Student Affairs to reactivate.`,
+      };
+    }
+
+    setFailedLoginAttempts(0);
+    setLockoutUntil(null);
+    setState((prev) => ({
+      ...prev,
+      currentUser: {
+        role: 'club_rep',
+        name: matchedClub.representativeName,
+        email: matchedClub.representativeEmail,
+        clubId: matchedClub.id,
+      },
+    }));
+    setCurrentView('my_club');
+    showToast(`Signed in as ${matchedClub.representativeName} (${matchedClub.acronym}).`);
+    return { ok: true };
+  };
+
+  const loginAsDemo: AppContextValue['loginAsDemo'] = (mode) => {
+    setFailedLoginAttempts(0);
+    setLockoutUntil(null);
+    if (mode === 'admin') {
+      setState((prev) => ({
+        ...prev,
+        currentUser: {
+          role: 'admin',
+          name: ADMIN_ACCOUNT.name,
+          email: ADMIN_ACCOUNT.email,
+        },
+      }));
+      setCurrentView('admin_dashboard');
+      showToast('Signed in to Admin Dashboard.');
+      return;
+    }
+
+    const pekom =
+      state.clubs.find((c) => c.id === 'club-pekom' && c.status === 'Active') ||
+      state.clubs.find((c) => c.status === 'Active');
+
+    if (pekom) {
+      setState((prev) => ({
+        ...prev,
+        currentUser: {
+          role: 'club_rep',
+          name: pekom.representativeName,
+          email: pekom.representativeEmail,
+          clubId: pekom.id,
+        },
+      }));
+      setCurrentView('my_club');
+      showToast(`Signed in as ${pekom.representativeName} (${pekom.acronym}).`);
+    }
+  };
+
+  const logout = () => {
+    setState((prev) => ({ ...prev, currentUser: null }));
+    setCurrentView('home');
+    showToast('Signed out of EventPool.');
+  };
+
+  const createClubAccount: AppContextValue['createClubAccount'] = (input) => {
+    const cleanEmail = input.representativeEmail.trim().toLowerCase();
+    const duplicate = state.clubs.some(
+      (c) => c.representativeEmail.toLowerCase() === cleanEmail
+    );
+    if (duplicate) {
+      return {
+        ok: false,
+        error: 'A club account with this UM representative email already exists.',
+      };
+    }
+
+    const newClub: Club = {
+      id: `club-${Date.now()}`,
+      name: input.name.trim(),
+      acronym: input.acronym.trim(),
+      categoryFocus: input.categoryFocus.trim() || 'Student Organization',
+      description: input.description.trim(),
+      storageLocation: input.storageLocation.trim(),
+      contactEmail: (input.contactEmail || input.representativeEmail).trim(),
+      picPhone: input.picPhone.trim() || '+60 12-000 0000',
+      representativeName: input.representativeName.trim(),
+      representativeEmail: input.representativeEmail.trim(),
+      password: input.password || 'password123',
+      status: 'Active',
+      createdAt: REFERENCE_TODAY,
+    };
+
+    setState((prev) => ({
+      ...prev,
+      clubs: [newClub, ...prev.clubs],
+    }));
+    showToast(`Club account "${newClub.acronym}" created and activated.`);
+    return { ok: true, club: newClub };
+  };
+
+  const updateClubDetails: AppContextValue['updateClubDetails'] = (clubId, input) => {
+    setState((prev) => ({
+      ...prev,
+      clubs: prev.clubs.map((c) =>
+        c.id === clubId
+          ? {
+              ...c,
+              name: input.name.trim(),
+              acronym: input.acronym.trim(),
+              categoryFocus: input.categoryFocus.trim(),
+              description: input.description.trim(),
+              storageLocation: input.storageLocation.trim(),
+              contactEmail: input.contactEmail.trim(),
+              picPhone: input.picPhone.trim(),
+              representativeName: input.representativeName.trim(),
+              representativeEmail: input.representativeEmail.trim(),
+              ...(input.logoUrl !== undefined
+                ? { logoUrl: input.logoUrl }
+                : {}),
+            }
+          : c
+      ),
+      currentUser:
+        prev.currentUser?.clubId === clubId
+          ? {
+              ...prev.currentUser,
+              name: input.representativeName.trim(),
+              email: input.representativeEmail.trim(),
+            }
+          : prev.currentUser,
+    }));
+    showToast('Club details updated.');
+  };
+
+  const updateOwnClubProfile: AppContextValue['updateOwnClubProfile'] = (
+    clubId,
+    input
+  ) => {
+    if (
+      state.currentUser?.role !== 'club_rep' ||
+      state.currentUser.clubId !== clubId
+    ) {
+      return {
+        ok: false,
+        error: 'Only this club’s authorized representative can update its profile.',
+      };
+    }
+    setState((prev) => ({
+      ...prev,
+      clubs: prev.clubs.map((c) =>
+        c.id === clubId
+          ? {
+              ...c,
+              name: input.name.trim(),
+              description: input.description.trim(),
+              contactEmail: input.contactEmail.trim(),
+              picPhone: input.picPhone.trim(),
+              storageLocation: input.storageLocation.trim(),
+              ...(input.logoUrl !== undefined
+                ? { logoUrl: input.logoUrl }
+                : {}),
+            }
+          : c
+      ),
+    }));
+    showToast('Club profile saved.');
+    return { ok: true };
+  };
+
+  const deactivateClub: AppContextValue['deactivateClub'] = (clubId) => {
+    const club = state.clubs.find((c) => c.id === clubId);
+    setState((prev) => ({
+      ...prev,
+      clubs: prev.clubs.map((c) =>
+        c.id === clubId ? { ...c, status: 'Inactive' } : c
+      ),
+      currentUser:
+        prev.currentUser?.clubId === clubId ? null : prev.currentUser,
+    }));
+    showToast(`${club?.acronym || 'Club'} has been deactivated and set to Inactive.`);
+  };
+
+  const reactivateClub: AppContextValue['reactivateClub'] = (clubId) => {
+    const club = state.clubs.find((c) => c.id === clubId);
+    setState((prev) => ({
+      ...prev,
+      clubs: prev.clubs.map((c) =>
+        c.id === clubId ? { ...c, status: 'Active' } : c
+      ),
+    }));
+    showToast(`${club?.acronym || 'Club'} has been reactivated.`);
+  };
+
+  const processAccessRequest: AppContextValue['processAccessRequest'] = (id, action) => {
+    const target = state.accessRequests.find((r) => r.id === id);
+    if (!target) return;
+
+    if (action === 'decline') {
+      setState((prev) => ({
+        ...prev,
+        accessRequests: prev.accessRequests.map((r) =>
+          r.id === id ? { ...r, status: 'Declined' } : r
+        ),
+      }));
+      showToast(`Declined club access request from ${target.clubName}.`);
+      return;
+    }
+
+    const acronym =
+      target.clubName
+        .split(' ')
+        .map((w) => w[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 8) || target.clubName.slice(0, 8);
+
+    const createdClub: Club = {
+      id: `club-${Date.now()}`,
+      name: target.clubName,
+      acronym,
+      categoryFocus: 'Student Organization',
+      description: `Verified Universiti Malaya student organization represented by ${target.representativeName}.`,
+      storageLocation: 'UM Student Activity Centre',
+      contactEmail: target.email,
+      picPhone: '+60 12-000 0000',
+      representativeName: target.representativeName,
+      representativeEmail: target.email,
+      password: 'password123',
+      status: 'Active',
+      createdAt: REFERENCE_TODAY,
+    };
+
+    setState((prev) => ({
+      ...prev,
+      accessRequests: prev.accessRequests.map((r) =>
+        r.id === id ? { ...r, status: 'Approved' } : r
+      ),
+      clubs: [createdClub, ...prev.clubs],
+    }));
+    showToast(`Approved access request and activated ${target.clubName}.`);
+  };
+
+  const createEvent: AppContextValue['createEvent'] = (input) => {
+    const newEvt: ClubEvent = {
+      id: `evt-${Date.now()}`,
+      clubId: input.clubId,
+      name: input.name.trim(),
+      date: input.date,
+      purpose: input.purpose.trim(),
+      description: input.description?.trim() || undefined,
+      createdAt: REFERENCE_TODAY,
+    };
+    setState((prev) => ({
+      ...prev,
+      events: [newEvt, ...prev.events],
+    }));
+    showToast(`Event "${newEvt.name}" created.`);
+    return newEvt;
+  };
+
+  const updateEvent: AppContextValue['updateEvent'] = (eventId, input) => {
+    setState((prev) => ({
+      ...prev,
+      events: prev.events.map((ev) =>
+        ev.id === eventId
+          ? {
+              ...ev,
+              name: input.name.trim(),
+              date: input.date,
+              purpose: input.purpose.trim(),
+              description: input.description?.trim() || undefined,
+            }
+          : ev
+      ),
+    }));
+    showToast('Event updated.');
+  };
+
+  const submitClubAccessRequest: AppContextValue['submitClubAccessRequest'] = (input) => {
+    const newReq: ClubAccessRequest = {
+      id: `acc-${Date.now()}`,
+      clubName: input.clubName.trim(),
+      representativeName: input.representativeName.trim(),
+      email: input.email.trim(),
+      status: 'Pending',
+      submittedAt: REFERENCE_TODAY,
+    };
+    setState((prev) => ({
+      ...prev,
+      accessRequests: [newReq, ...prev.accessRequests],
+    }));
+  };
+
+  const submitBorrowRequest: AppContextValue['submitBorrowRequest'] = (input) => {
+    const resource = state.resources.find((r) => r.id === input.resourceId);
+    if (!resource) return { ok: false, error: 'Resource not found.' };
+
+    const borrowerClubId = state.currentUser?.clubId || 'club-pekom';
+    if (borrowerClubId === resource.clubId) {
+      return { ok: false, error: 'You cannot borrow equipment owned by your own club.' };
+    }
+    if (input.requestedQuantity < 1 || input.requestedQuantity > resource.availableUnits) {
+      return {
+        ok: false,
+        error: `Requested quantity must be between 1 and ${resource.availableUnits}.`,
+      };
+    }
+    if (input.expectedReturnDate <= input.pickupDate) {
+      return {
+        ok: false,
+        error: 'Expected return date must be after the pickup date.',
+      };
+    }
+
+    const newReq: BorrowRequest = {
+      id: `req-${Date.now()}`,
+      resourceId: resource.id,
+      ownerClubId: resource.clubId,
+      borrowerClubId,
+      eventId: input.eventId,
+      eventName: input.eventName.trim(),
+      requestedQuantity: input.requestedQuantity,
+      purpose: input.purpose.trim(),
+      wouldOtherwisePurchase: input.wouldOtherwisePurchase,
+      remarks: input.remarks?.trim() || undefined,
+      pickupDate: input.pickupDate,
+      expectedReturnDate: input.expectedReturnDate,
+      status: 'Pending',
+      createdAt: REFERENCE_TODAY,
+      updatedAt: REFERENCE_TODAY,
+    };
+
+    setState((prev) => ({
+      ...prev,
+      requests: [newReq, ...prev.requests],
+    }));
+    showToast('Borrowing request submitted (Pending owner approval).');
+    return { ok: true };
+  };
+
+  const approveBorrowRequest: AppContextValue['approveBorrowRequest'] = (requestId) => {
+    const req = state.requests.find((r) => r.id === requestId);
+    if (!req) return { ok: false, error: 'Request not found.' };
+    const resource = state.resources.find((r) => r.id === req.resourceId);
+    if (!resource || resource.availableUnits < req.requestedQuantity) {
+      return {
+        ok: false,
+        error: 'Insufficient available units remaining to approve this request.',
+      };
+    }
+
+    setState((prev) => ({
+      ...prev,
+      requests: prev.requests.map((r) =>
+        r.id === requestId ? { ...r, status: 'Approved', updatedAt: REFERENCE_TODAY } : r
+      ),
+      resources: prev.resources.map((res) =>
+        res.id === req.resourceId
+          ? {
+              ...res,
+              availableUnits: res.availableUnits - req.requestedQuantity,
+              reservedUnits: res.reservedUnits + req.requestedQuantity,
+            }
+          : res
+      ),
+    }));
+    showToast('Borrowing request approved. Stock has been reserved.');
+    return { ok: true };
+  };
+
+  const rejectBorrowRequest: AppContextValue['rejectBorrowRequest'] = (requestId) => {
+    setState((prev) => ({
+      ...prev,
+      requests: prev.requests.map((r) =>
+        r.id === requestId ? { ...r, status: 'Rejected', updatedAt: REFERENCE_TODAY } : r
+      ),
+    }));
+    showToast('Borrowing request rejected and saved to history.');
+  };
+
+  const cancelBorrowRequest: AppContextValue['cancelBorrowRequest'] = (requestId) => {
+    const req = state.requests.find((r) => r.id === requestId);
+    if (!req || !['Pending', 'Approved'].includes(req.status)) return;
+
+    setState((prev) => ({
+      ...prev,
+      requests: prev.requests.map((r) =>
+        r.id === requestId ? { ...r, status: 'Cancelled', updatedAt: REFERENCE_TODAY } : r
+      ),
+      resources:
+        req.status === 'Approved'
+          ? prev.resources.map((res) =>
+              res.id === req.resourceId
+                ? {
+                    ...res,
+                    reservedUnits: Math.max(0, res.reservedUnits - req.requestedQuantity),
+                    availableUnits: res.availableUnits + req.requestedQuantity,
+                  }
+                : res
+            )
+          : prev.resources,
+    }));
+    showToast('Borrowing request cancelled and saved to history.');
+  };
+
+  const markPickedUp: AppContextValue['markPickedUp'] = (requestId) => {
+    const req = state.requests.find((r) => r.id === requestId);
+    if (!req || req.status !== 'Approved') return;
+    setState((prev) => ({
+      ...prev,
+      requests: prev.requests.map((r) =>
+        r.id === requestId ? { ...r, status: 'Borrowed', updatedAt: REFERENCE_TODAY } : r
+      ),
+      resources: prev.resources.map((res) =>
+        res.id === req.resourceId
+          ? {
+              ...res,
+              reservedUnits: Math.max(0, res.reservedUnits - req.requestedQuantity),
+              borrowedUnits: res.borrowedUnits + req.requestedQuantity,
+            }
+          : res
+      ),
+    }));
+    showToast('Marked as Borrowed (picked up).');
+  };
+
+  const markReturned: AppContextValue['markReturned'] = (requestId) => {
+    const req = state.requests.find((r) => r.id === requestId);
+    if (!req || req.status !== 'Borrowed') return;
+    setState((prev) => ({
+      ...prev,
+      requests: prev.requests.map((r) =>
+        r.id === requestId
+          ? {
+              ...r,
+              status: 'Return Pending',
+              returnedDate: REFERENCE_TODAY,
+              updatedAt: REFERENCE_TODAY,
+            }
+          : r
+      ),
+    }));
+    showToast('Return submitted. Awaiting owner verification.');
+  };
+
+  const confirmReturnVerification: AppContextValue['confirmReturnVerification'] = (
+    requestId,
+    counts
+  ) => {
+    const req = state.requests.find((r) => r.id === requestId);
+    if (!req) return { ok: false, error: 'Request not found.' };
+    const total = counts.reusable + counts.damaged + counts.missing;
+    if (total !== req.requestedQuantity) {
+      return {
+        ok: false,
+        error: `Reusable (${counts.reusable}) + Damaged (${counts.damaged}) + Missing (${counts.missing}) must equal ${req.requestedQuantity} borrowed units.`,
+      };
+    }
+
+    const lostUnits = counts.damaged + counts.missing;
+    setState((prev) => ({
+      ...prev,
+      requests: prev.requests.map((r) =>
+        r.id === requestId
+          ? {
+              ...r,
+              status: 'Completed',
+              updatedAt: REFERENCE_TODAY,
+              verification: { ...counts, verifiedAt: REFERENCE_TODAY },
+            }
+          : r
+      ),
+      resources: prev.resources.map((res) =>
+        res.id === req.resourceId
+          ? {
+              ...res,
+              borrowedUnits: Math.max(0, res.borrowedUnits - req.requestedQuantity),
+              availableUnits: res.availableUnits + counts.reusable,
+              totalUnits: Math.max(0, res.totalUnits - lostUnits),
+            }
+          : res
+      ),
+    }));
+    showToast(
+      `Return verified & completed. ${counts.reusable} reusable unit${counts.reusable === 1 ? '' : 's'} returned to stock.`
+    );
+    return { ok: true };
+  };
+
+  const addResource: AppContextValue['addResource'] = (input) => {
+    const newRes: Resource = {
+      id: `res-${Date.now()}`,
+      clubId: input.clubId,
+      name: input.name.trim(),
+      category: input.category,
+      totalUnits: input.totalUnits,
+      availableUnits: input.totalUnits,
+      reservedUnits: 0,
+      borrowedUnits: 0,
+      condition: input.condition,
+      location: input.location.trim(),
+      description: input.description.trim(),
+      remarks: input.remarks.trim(),
+      images: [input.imageUrl],
+      archived: false,
+      manualUnavailable: false,
+      estimatedUnitCostRM: input.estimatedUnitCostRM,
+      estimatedUnitWeightKg: input.estimatedUnitWeightKg,
+      createdAt: REFERENCE_TODAY,
+    };
+    setState((prev) => ({
+      ...prev,
+      resources: [newRes, ...prev.resources],
+    }));
+    showToast(`Added "${newRes.name}" to club inventory.`);
+    return newRes;
+  };
+
+  const editResourceQuantity: AppContextValue['editResourceQuantity'] = (
+    resourceId,
+    newTotal
+  ) => {
+    const res = state.resources.find((r) => r.id === resourceId);
+    if (!res) return { ok: false, error: 'Resource not found.' };
+    const committed = res.reservedUnits + res.borrowedUnits;
+    if (newTotal < committed) {
+      return {
+        ok: false,
+        error: `Cannot reduce total below ${committed} units currently reserved or borrowed.`,
+      };
+    }
+
+    setState((prev) => ({
+      ...prev,
+      resources: prev.resources.map((r) =>
+        r.id === resourceId
+          ? {
+              ...r,
+              totalUnits: newTotal,
+              availableUnits: newTotal - committed,
+            }
+          : r
+      ),
+    }));
+    showToast(`Updated "${res.name}" quantity to ${newTotal} units.`);
+    return { ok: true };
+  };
+
+  const toggleResourceAvailability: AppContextValue['toggleResourceAvailability'] = (
+    resourceId
+  ) => {
+    const res = state.resources.find((r) => r.id === resourceId);
+    setState((prev) => ({
+      ...prev,
+      resources: prev.resources.map((r) =>
+        r.id === resourceId
+          ? { ...r, manualUnavailable: !r.manualUnavailable }
+          : r
+      ),
+    }));
+    showToast(
+      res?.manualUnavailable
+        ? `"${res.name}" is now visible as Available.`
+        : `"${res?.name}" marked Unavailable for new requests.`
+    );
+  };
+
+  const archiveResource: AppContextValue['archiveResource'] = (resourceId) => {
+    const hasActiveUse = state.requests.some(
+      (req) =>
+        req.resourceId === resourceId &&
+        ['Pending', 'Approved', 'Borrowed', 'Return Pending'].includes(req.status)
+    );
+    if (hasActiveUse) {
+      return { ok: false, blocked: true };
+    }
+    setState((prev) => ({
+      ...prev,
+      resources: prev.resources.map((r) =>
+        r.id === resourceId ? { ...r, archived: true } : r
+      ),
+    }));
+    showToast('Resource archived. Historical records are preserved.');
+    return { ok: true };
+  };
+
+  const resetDemoData = () => {
+    const fresh: PersistedState = {
+      clubs: INITIAL_CLUBS,
+      events: INITIAL_EVENTS,
+      resources: INITIAL_RESOURCES,
+      requests: INITIAL_REQUESTS,
+      accessRequests: INITIAL_ACCESS_REQUESTS,
+      currentUser: state.currentUser,
+    };
+    setState(fresh);
+    showToast('Demo data restored to initial state.');
+  };
+
+  const clubMap = useMemo(
+    () => new Map(state.clubs.map((c) => [c.id, c])),
+    [state.clubs]
+  );
+
+  const resourceMap = useMemo(
+    () => new Map(state.resources.map((r) => [r.id, r])),
+    [state.resources]
+  );
+
+  const requestMap = useMemo(
+    () => new Map(state.requests.map((r) => [r.id, r])),
+    [state.requests]
+  );
+
+  const getClubById = (id?: string | null) => (id ? clubMap.get(id) : undefined);
+  const getResourceById = (id?: string | null) =>
+    id ? resourceMap.get(id) : undefined;
+  const getRequestById = (id?: string | null) =>
+    id ? requestMap.get(id) : undefined;
+
+  return (
+    <AppContext.Provider
+      value={{
+        clubs: state.clubs,
+        events: state.events,
+        resources: state.resources,
+        requests: state.requests,
+        accessRequests: state.accessRequests,
+        currentUser: state.currentUser,
+        currentView,
+        selectedClubId,
+        selectedResourceId,
+        selectedRequestId,
+        marketplaceSearch,
+        toastMessage,
+        failedLoginAttempts,
+        lockoutRemainingSec,
+        setMarketplaceSearch,
+        showToast,
+        navigate,
+        login,
+        loginAsDemo,
+        logout,
+        createClubAccount,
+        updateClubDetails,
+        updateOwnClubProfile,
+        deactivateClub,
+        reactivateClub,
+        processAccessRequest,
+        createEvent,
+        updateEvent,
+        submitClubAccessRequest,
+        submitBorrowRequest,
+        approveBorrowRequest,
+        rejectBorrowRequest,
+        cancelBorrowRequest,
+        markPickedUp,
+        markReturned,
+        confirmReturnVerification,
+        addResource,
+        editResourceQuantity,
+        toggleResourceAvailability,
+        archiveResource,
+        resetDemoData,
+        getClubById,
+        getResourceById,
+        getRequestById,
+      }}
+    >
+      {children}
+    </AppContext.Provider>
+  );
+};
+
+export function useApp() {
+  const ctx = useContext(AppContext);
+  if (!ctx) throw new Error('useApp must be used inside AppProvider');
+  return ctx;
+}
