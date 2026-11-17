@@ -510,7 +510,7 @@ export const BorrowFormPage: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-[#6B766E]">Quantity</span>
                 <span className="font-semibold text-[#1F3626] tabular-nums">
-                  {quantity} {resource.name.toLowerCase()}
+                  {quantity} {resource.name}
                 </span>
               </div>
               <div className="flex items-center justify-between">

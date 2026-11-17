@@ -20,7 +20,7 @@ import type {
   ResourceCategory,
 } from '../types/eventpool';
 
-const STORAGE_KEY = 'eventpool_um_state_v4';
+const STORAGE_KEY = 'eventpool_um_state_v5';
 
 interface PersistedState {
   clubs: Club[];
@@ -209,6 +209,7 @@ interface AppContextValue {
   // Events
   createEvent: (input: CreateEventInput) => ClubEvent;
   updateEvent: (eventId: string, input: Omit<CreateEventInput, 'clubId'>) => void;
+  deleteEvent: (eventId: string) => { ok: boolean; error?: string };
   // Public access request
   submitClubAccessRequest: (input: {
     clubName: string;
@@ -218,7 +219,7 @@ interface AppContextValue {
   // Borrowing & inventory lifecycle
   submitBorrowRequest: (input: SubmitBorrowInput) => { ok: boolean; error?: string };
   approveBorrowRequest: (requestId: string) => { ok: boolean; error?: string };
-  rejectBorrowRequest: (requestId: string) => void;
+  rejectBorrowRequest: (requestId: string, reason?: string) => void;
   cancelBorrowRequest: (requestId: string) => void;
   markPickedUp: (requestId: string) => void;
   markReturned: (requestId: string) => void;
@@ -228,6 +229,7 @@ interface AppContextValue {
   ) => { ok: boolean; error?: string };
   addResource: (input: AddResourceInput) => Resource;
   editResourceQuantity: (resourceId: string, newTotal: number) => { ok: boolean; error?: string };
+  updateResource: (resourceId: string, input: Partial<AddResourceInput>) => { ok: boolean; error?: string };
   toggleResourceAvailability: (resourceId: string) => void;
   archiveResource: (resourceId: string) => { ok: boolean; blocked?: boolean };
   resetDemoData: () => void;
@@ -640,6 +642,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Event updated.');
   };
 
+  const deleteEvent: AppContextValue['deleteEvent'] = (eventId) => {
+    const linkedRequest = state.requests.find(
+      (r) => r.eventId === eventId && !['returned', 'rejected', 'cancelled'].includes(r.status)
+    );
+    if (linkedRequest) {
+      const resName = state.resources.find((r) => r.id === linkedRequest.resourceId)?.name || 'resource';
+      const msg = `Cannot delete event: it is associated with an active borrow request (${resName}).`;
+      showToast(msg);
+      return { ok: false, error: msg };
+    }
+    setState((prev) => ({
+      ...prev,
+      events: prev.events.filter((ev) => ev.id !== eventId),
+    }));
+    showToast('Event deleted.');
+    return { ok: true };
+  };
+
   const submitClubAccessRequest: AppContextValue['submitClubAccessRequest'] = (input) => {
     const newReq: ClubAccessRequest = {
       id: `acc-${Date.now()}`,
@@ -732,11 +752,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { ok: true };
   };
 
-  const rejectBorrowRequest: AppContextValue['rejectBorrowRequest'] = (requestId) => {
+  const rejectBorrowRequest: AppContextValue['rejectBorrowRequest'] = (requestId, reason) => {
     setState((prev) => ({
       ...prev,
       requests: prev.requests.map((r) =>
-        r.id === requestId ? { ...r, status: 'Rejected', updatedAt: REFERENCE_TODAY } : r
+        r.id === requestId
+          ? {
+              ...r,
+              status: 'Rejected',
+              rejectionReason: reason || 'Resource unavailable or scheduling conflict.',
+              updatedAt: REFERENCE_TODAY,
+            }
+          : r
       ),
     }));
     showToast('Borrowing request rejected and saved to history.');
@@ -910,6 +937,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { ok: true };
   };
 
+  const updateResource: AppContextValue['updateResource'] = (
+    resourceId,
+    input
+  ) => {
+    const res = state.resources.find((r) => r.id === resourceId);
+    if (!res) return { ok: false, error: 'Resource not found.' };
+
+    const committed = res.reservedUnits + res.borrowedUnits;
+    if (input.totalUnits !== undefined && input.totalUnits < committed) {
+      return {
+        ok: false,
+        error: `Cannot reduce total below ${committed} units currently reserved or borrowed.`,
+      };
+    }
+
+    setState((prev) => ({
+      ...prev,
+      resources: prev.resources.map((r) => {
+        if (r.id !== resourceId) return r;
+        const total = input.totalUnits !== undefined ? input.totalUnits : r.totalUnits;
+        return {
+          ...r,
+          name: input.name ? input.name.trim() : r.name,
+          category: input.category || r.category,
+          condition: input.condition || r.condition,
+          location: input.location ? input.location.trim() : r.location,
+          description: input.description !== undefined ? input.description.trim() : r.description,
+          remarks: input.remarks !== undefined ? input.remarks.trim() : r.remarks,
+          totalUnits: total,
+          availableUnits: total - committed,
+          images: input.imageUrl ? [input.imageUrl] : r.images,
+          estimatedUnitCostRM: input.estimatedUnitCostRM !== undefined ? input.estimatedUnitCostRM : r.estimatedUnitCostRM,
+          estimatedUnitWeightKg: input.estimatedUnitWeightKg !== undefined ? input.estimatedUnitWeightKg : r.estimatedUnitWeightKg,
+        };
+      }),
+    }));
+    showToast(`Resource "${input.name?.trim() || res.name}" updated successfully.`);
+    return { ok: true };
+  };
+
   const toggleResourceAvailability: AppContextValue['toggleResourceAvailability'] = (
     resourceId
   ) => {
@@ -1013,6 +1080,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         processAccessRequest,
         createEvent,
         updateEvent,
+        deleteEvent,
         submitClubAccessRequest,
         submitBorrowRequest,
         approveBorrowRequest,
@@ -1023,6 +1091,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         confirmReturnVerification,
         addResource,
         editResourceQuantity,
+        updateResource,
         toggleResourceAvailability,
         archiveResource,
         resetDemoData,
