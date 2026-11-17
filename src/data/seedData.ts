@@ -240,9 +240,9 @@ export const INITIAL_RESOURCES: Resource[] = [
     name: 'Portable Speakers',
     category: 'Audio Equipment',
     totalUnits: 4,
-    availableUnits: 4,
+    availableUnits: 2,
     reservedUnits: 0,
-    borrowedUnits: 0,
+    borrowedUnits: 2,
     condition: 'Excellent',
     location: 'PEKOM Storeroom · Block A, FSKTM',
     description:
@@ -569,6 +569,24 @@ export const INITIAL_REQUESTS: BorrowRequest[] = [
     status: 'Return Pending',
     createdAt: '2026-11-06',
     updatedAt: '2026-11-13',
+  },
+  // Return Pending #2 (PEKOM verifying 2 portable PA speakers returned by REC / Engineering Club)
+  {
+    id: 'req-108',
+    resourceId: 'res-pekom-speaker',
+    ownerClubId: 'club-pekom',
+    borrowerClubId: 'club-eng',
+    eventName: 'Robotics Demo & Pit Day',
+    requestedQuantity: 2,
+    purpose: 'Live arena sound commentary and workshop team briefings.',
+    wouldOtherwisePurchase: true,
+    remarks: 'Returned to FSKTM lab storage on Monday evening.',
+    pickupDate: '2026-11-11',
+    expectedReturnDate: '2026-11-14',
+    returnedDate: '2026-11-14',
+    status: 'Return Pending',
+    createdAt: '2026-11-07',
+    updatedAt: '2026-11-14',
   },
   // Borrowed (GDGoC lending 2 microphones to UMDSC)
   {

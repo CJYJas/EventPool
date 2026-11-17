@@ -42,6 +42,8 @@ export const RequestDetailPage: React.FC = () => {
 
   const [queueFilter, setQueueFilter] = useState<'actionable' | 'all'>('all');
   const [cancelConfirmOpen, setCancelConfirmOpen] = useState(false);
+  const [rejectConfirmOpen, setRejectConfirmOpen] = useState(false);
+  const [rejectionRemarks, setRejectionRemarks] = useState('');
 
   // Return verification inline form state
   const [reusableCount, setReusableCount] = useState(0);
@@ -292,7 +294,10 @@ export const RequestDetailPage: React.FC = () => {
                     <>
                       <button
                         type="button"
-                        onClick={() => rejectBorrowRequest(activeRequest.id)}
+                        onClick={() => {
+                          setRejectionRemarks('');
+                          setRejectConfirmOpen(true);
+                        }}
                         className="px-4 h-10 rounded-xl border border-[#D4D1C7] text-xs font-semibold text-[#3D4B41] hover:bg-[#FAF8F2] cursor-pointer"
                       >
                         Reject
@@ -469,6 +474,17 @@ export const RequestDetailPage: React.FC = () => {
                     </h3>
                     <p className="mt-1 text-sm text-[#4A554E]">
                       {activeRequest.remarks}
+                    </p>
+                  </div>
+                )}
+
+                {activeRequest.status === 'Rejected' && activeRequest.rejectionReason && (
+                  <div className="p-4 rounded-2xl bg-[#FDF2F2] border border-[#F0B7B4] space-y-1">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8C2220]">
+                      Rejection Remarks
+                    </h3>
+                    <p className="mt-1 text-sm text-[#4A554E]">
+                      {activeRequest.rejectionReason}
                     </p>
                   </div>
                 )}
@@ -664,6 +680,56 @@ export const RequestDetailPage: React.FC = () => {
         }}
         onClose={() => setCancelConfirmOpen(false)}
       />
+
+      {rejectConfirmOpen && activeRequest && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md bg-white rounded-3xl border border-[#E5E2D9] p-6 sm:p-7 relative shadow-xl space-y-4">
+            <h2 className="text-xl font-bold text-[#1F3626]">
+              Reject Borrowing Request
+            </h2>
+            <p className="text-xs text-[#6B766E]">
+              Provide a reason or rejection remarks for {getClubById(activeRequest.borrowerClubId)?.acronym || 'the borrower'}.
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                Rejection Remarks / Reason
+              </label>
+              <textarea
+                rows={3}
+                value={rejectionRemarks}
+                onChange={(e) => setRejectionRemarks(e.target.value)}
+                placeholder="e.g. Reserved for club annual showcase / Equipment under maintenance..."
+                className="w-full p-3 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626] focus:border-[#8C2220] focus:outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setRejectConfirmOpen(false)}
+                className="px-4 h-10 rounded-xl border border-[#D4D1C7] text-xs font-semibold text-[#3D4B41] hover:bg-[#FAF8F2] cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  rejectBorrowRequest(activeRequest.id, rejectionRemarks.trim() || undefined);
+                  setRejectConfirmOpen(false);
+                }}
+                className="px-5 h-10 rounded-xl bg-[#8C2220] hover:bg-[#731A19] text-white text-xs font-semibold cursor-pointer"
+              >
+                Confirm Rejection
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
