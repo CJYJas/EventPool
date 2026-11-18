@@ -1,6 +1,5 @@
 import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import {
-  ADMIN_ACCOUNT,
   INITIAL_ACCESS_REQUESTS,
   INITIAL_CLUBS,
   INITIAL_EVENTS,
@@ -19,6 +18,9 @@ import type {
   ResourceAvailability,
   ResourceCategory,
 } from '../types/eventpool';
+import { setUnauthorizedHandler } from '../services/api';
+import { describeAuthError, restoreSession, signIn, signOut, type AuthFailureCode } from '../services/auth';
+import { checkViewAccess, homeViewFor } from './viewAccess';
 
 const STORAGE_KEY = 'eventpool_um_state_v5';
 
@@ -28,7 +30,6 @@ interface PersistedState {
   resources: Resource[];
   requests: BorrowRequest[];
   accessRequests: ClubAccessRequest[];
-  currentUser: CurrentUser | null;
 }
 
 function loadInitialState(): PersistedState {
@@ -43,8 +44,8 @@ function loadInitialState(): PersistedState {
         Array.isArray(parsed.events)
       ) {
         const seedClubMap = new Map(INITIAL_CLUBS.map((c) => [c.id, c]));
+        // currentUser is intentionally not restored from storage: identity comes only from the verified backend profile.
         return {
-          ...parsed,
           clubs: parsed.clubs.map((club) => {
             const seed = seedClubMap.get(club.id);
             if (!seed) return club;
@@ -53,6 +54,10 @@ function loadInitialState(): PersistedState {
               logoUrl: 'logoUrl' in club ? club.logoUrl : seed.logoUrl,
             };
           }),
+          events: parsed.events,
+          resources: parsed.resources,
+          requests: parsed.requests,
+          accessRequests: parsed.accessRequests,
         };
       }
     }
@@ -65,7 +70,6 @@ function loadInitialState(): PersistedState {
     resources: INITIAL_RESOURCES,
     requests: INITIAL_REQUESTS,
     accessRequests: INITIAL_ACCESS_REQUESTS,
-    currentUser: null,
   };
 }
 
@@ -167,7 +171,7 @@ interface SubmitBorrowInput {
 interface LoginResult {
   ok: boolean;
   error?: string;
-  code?: 'invalid_credentials' | 'disabled_account' | 'too_many_attempts';
+  code?: AuthFailureCode;
 }
 
 interface AppContextValue {
@@ -183,8 +187,8 @@ interface AppContextValue {
   selectedRequestId: string | null;
   marketplaceSearch: string;
   toastMessage: string | null;
-  failedLoginAttempts: number;
-  lockoutRemainingSec: number;
+  /** False until the stored session (if any) has been checked against the backend. */
+  authReady: boolean;
   setMarketplaceSearch: (value: string) => void;
   showToast: (msg: string) => void;
   navigate: (
@@ -196,8 +200,7 @@ interface AppContextValue {
       search?: string;
     }
   ) => void;
-  login: (email: string, password: string) => LoginResult;
-  loginAsDemo: (mode: 'rep' | 'admin') => void;
+  login: (email: string, password: string) => Promise<LoginResult>;
   logout: () => void;
   // Admin club management
   createClubAccount: (input: CreateClubInput) => { ok: boolean; error?: string; club?: Club };
@@ -249,9 +252,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [marketplaceSearch, setMarketplaceSearch] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const [failedLoginAttempts, setFailedLoginAttempts] = useState(0);
-  const [lockoutUntil, setLockoutUntil] = useState<number | null>(null);
-  const [lockoutRemainingSec, setLockoutRemainingSec] = useState(0);
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
+  const [authReady, setAuthReady] = useState(false);
 
   useEffect(() => {
     try {
@@ -267,29 +269,42 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => window.clearTimeout(timer);
   }, [toastMessage]);
 
+  // Restore the session from a stored token by asking the backend who it belongs to.
   useEffect(() => {
-    if (!lockoutUntil) {
-      setLockoutRemainingSec(0);
-      return;
-    }
-    const tick = () => {
-      const diff = Math.ceil((lockoutUntil - Date.now()) / 1000);
-      if (diff <= 0) {
-        setLockoutUntil(null);
-        setLockoutRemainingSec(0);
-        setFailedLoginAttempts(0);
-      } else {
-        setLockoutRemainingSec(diff);
-      }
+    let cancelled = false;
+    restoreSession().then((user) => {
+      if (cancelled) return;
+      if (user) setCurrentUser(user);
+      setAuthReady(true);
+    });
+    return () => {
+      cancelled = true;
     };
-    tick();
-    const interval = window.setInterval(tick, 1000);
-    return () => window.clearInterval(interval);
-  }, [lockoutUntil]);
+  }, []);
+
+  // Any API call rejected as expired/disabled signs the user out.
+  useEffect(() => {
+    setUnauthorizedHandler((reason) => {
+      setCurrentUser(null);
+      setCurrentView('home');
+      setToastMessage(
+        reason === 'disabled'
+          ? 'Your account has been disabled. Contact UM Admin.'
+          : 'Your session has expired. Please log in again.'
+      );
+    });
+    return () => setUnauthorizedHandler(null);
+  }, []);
 
   const showToast = (msg: string) => setToastMessage(msg);
 
   const navigate: AppContextValue['navigate'] = (view, options) => {
+    if (checkViewAccess(view, currentUser) === 'login_required') {
+      setCurrentView('home');
+      showToast('Please log in to continue.');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      return;
+    }
     if (options?.clubId !== undefined) setSelectedClubId(options.clubId);
     if (options?.resourceId !== undefined) setSelectedResourceId(options.resourceId);
     if (options?.requestId !== undefined) setSelectedRequestId(options.requestId);
@@ -298,132 +313,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
-  const login: AppContextValue['login'] = (email, password) => {
-    if (lockoutUntil && Date.now() < lockoutUntil) {
-      const secs = Math.ceil((lockoutUntil - Date.now()) / 1000);
-      return {
-        ok: false,
-        code: 'too_many_attempts',
-        error: `Too many failed login attempts. Please wait ${secs}s before trying again or reset your password.`,
-      };
-    }
-
-    const cleanEmail = email.trim().toLowerCase();
-    if (!cleanEmail || !password) {
-      return {
-        ok: false,
-        code: 'invalid_credentials',
-        error: 'Please enter both your UM email and password.',
-      };
-    }
-
-    if (
-      cleanEmail === ADMIN_ACCOUNT.email.toLowerCase() &&
-      password === ADMIN_ACCOUNT.password
-    ) {
-      setFailedLoginAttempts(0);
-      setLockoutUntil(null);
-      setState((prev) => ({
-        ...prev,
-        currentUser: {
-          role: 'admin',
-          name: ADMIN_ACCOUNT.name,
-          email: ADMIN_ACCOUNT.email,
-        },
-      }));
-      setCurrentView('admin_dashboard');
-      showToast('Signed in as UM System Admin.');
+  const login: AppContextValue['login'] = async (email, password) => {
+    try {
+      const user = await signIn(email, password);
+      setCurrentUser(user);
+      setCurrentView(homeViewFor(user));
+      showToast(`Signed in as ${user.name}.`);
       return { ok: true };
-    }
-
-    const matchedClub = state.clubs.find(
-      (c) =>
-        c.representativeEmail.toLowerCase() === cleanEmail ||
-        c.contactEmail.toLowerCase() === cleanEmail
-    );
-
-    if (!matchedClub || matchedClub.password !== password) {
-      const nextAttempts = failedLoginAttempts + 1;
-      setFailedLoginAttempts(nextAttempts);
-      if (nextAttempts >= 3) {
-        const until = Date.now() + 30000;
-        setLockoutUntil(until);
-        return {
-          ok: false,
-          code: 'too_many_attempts',
-          error:
-            'Too many failed login attempts (3/3). Login is temporarily locked for 30 seconds.',
-        };
-      }
-      return {
-        ok: false,
-        code: 'invalid_credentials',
-        error: `Invalid UM email or password (${nextAttempts}/3 attempts).`,
-      };
-    }
-
-    if (matchedClub.status === 'Inactive') {
-      return {
-        ok: false,
-        code: 'disabled_account',
-        error: `Account disabled: ${matchedClub.acronym} is currently marked Inactive by UM Admin. Contact Student Affairs to reactivate.`,
-      };
-    }
-
-    setFailedLoginAttempts(0);
-    setLockoutUntil(null);
-    setState((prev) => ({
-      ...prev,
-      currentUser: {
-        role: 'club_rep',
-        name: matchedClub.representativeName,
-        email: matchedClub.representativeEmail,
-        clubId: matchedClub.id,
-      },
-    }));
-    setCurrentView('my_club');
-    showToast(`Signed in as ${matchedClub.representativeName} (${matchedClub.acronym}).`);
-    return { ok: true };
-  };
-
-  const loginAsDemo: AppContextValue['loginAsDemo'] = (mode) => {
-    setFailedLoginAttempts(0);
-    setLockoutUntil(null);
-    if (mode === 'admin') {
-      setState((prev) => ({
-        ...prev,
-        currentUser: {
-          role: 'admin',
-          name: ADMIN_ACCOUNT.name,
-          email: ADMIN_ACCOUNT.email,
-        },
-      }));
-      setCurrentView('admin_dashboard');
-      showToast('Signed in to Admin Dashboard.');
-      return;
-    }
-
-    const pekom =
-      state.clubs.find((c) => c.id === 'club-pekom' && c.status === 'Active') ||
-      state.clubs.find((c) => c.status === 'Active');
-
-    if (pekom) {
-      setState((prev) => ({
-        ...prev,
-        currentUser: {
-          role: 'club_rep',
-          name: pekom.representativeName,
-          email: pekom.representativeEmail,
-          clubId: pekom.id,
-        },
-      }));
-      setCurrentView('my_club');
-      showToast(`Signed in as ${pekom.representativeName} (${pekom.acronym}).`);
+    } catch (err) {
+      const failure = describeAuthError(err);
+      return { ok: false, code: failure.code, error: failure.message };
     }
   };
 
   const logout = () => {
-    setState((prev) => ({ ...prev, currentUser: null }));
+    signOut();
+    setCurrentUser(null);
     setCurrentView('home');
     showToast('Signed out of EventPool.');
   };
@@ -486,14 +391,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
           : c
       ),
-      currentUser:
-        prev.currentUser?.clubId === clubId
-          ? {
-              ...prev.currentUser,
-              name: input.representativeName.trim(),
-              email: input.representativeEmail.trim(),
-            }
-          : prev.currentUser,
     }));
     showToast('Club details updated.');
   };
@@ -503,8 +400,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     input
   ) => {
     if (
-      state.currentUser?.role !== 'club_rep' ||
-      state.currentUser.clubId !== clubId
+      currentUser?.role !== 'club_rep' ||
+      currentUser.clubId !== clubId
     ) {
       return {
         ok: false,
@@ -540,8 +437,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       clubs: prev.clubs.map((c) =>
         c.id === clubId ? { ...c, status: 'Inactive' } : c
       ),
-      currentUser:
-        prev.currentUser?.clubId === clubId ? null : prev.currentUser,
     }));
     showToast(`${club?.acronym || 'Club'} has been deactivated and set to Inactive.`);
   };
@@ -679,7 +574,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const resource = state.resources.find((r) => r.id === input.resourceId);
     if (!resource) return { ok: false, error: 'Resource not found.' };
 
-    const borrowerClubId = state.currentUser?.clubId || 'club-pekom';
+    const borrowerClubId = currentUser?.clubId || 'club-pekom';
     if (borrowerClubId === resource.clubId) {
       return { ok: false, error: 'You cannot borrow equipment owned by your own club.' };
     }
@@ -1022,7 +917,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       resources: INITIAL_RESOURCES,
       requests: INITIAL_REQUESTS,
       accessRequests: INITIAL_ACCESS_REQUESTS,
-      currentUser: state.currentUser,
     };
     setState(fresh);
     showToast('Demo data restored to initial state.');
@@ -1057,20 +951,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         resources: state.resources,
         requests: state.requests,
         accessRequests: state.accessRequests,
-        currentUser: state.currentUser,
+        currentUser,
         currentView,
         selectedClubId,
         selectedResourceId,
         selectedRequestId,
         marketplaceSearch,
         toastMessage,
-        failedLoginAttempts,
-        lockoutRemainingSec,
+        authReady,
         setMarketplaceSearch,
         showToast,
         navigate,
         login,
-        loginAsDemo,
         logout,
         createClubAccount,
         updateClubDetails,

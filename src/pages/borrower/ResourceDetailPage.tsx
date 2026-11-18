@@ -20,7 +20,6 @@ export const ResourceDetailPage: React.FC = () => {
     navigate,
     getClubById,
     getResourceById,
-    loginAsDemo,
     showToast,
   } = useApp();
 
@@ -49,12 +48,7 @@ export const ResourceDetailPage: React.FC = () => {
     currentUser?.role !== 'admin';
 
   const handleRequestBorrow = () => {
-    if (!currentUser) {
-      loginAsDemo('rep');
-      navigate('borrow_form', { resourceId: resource.id });
-      showToast('Signed in as Alice (PEKOM) to submit your borrowing request.');
-      return;
-    }
+    // navigate() sends signed-out users to the login screen
     navigate('borrow_form', { resourceId: resource.id });
   };
 

@@ -9,7 +9,6 @@ export const Navbar: React.FC = () => {
     navigate,
     marketplaceSearch,
     setMarketplaceSearch,
-    loginAsDemo,
     logout,
     resetDemoData,
     getClubById,
@@ -168,11 +167,7 @@ export const Navbar: React.FC = () => {
             <button
               type="button"
               onClick={() => {
-                if (!currentUser) {
-                  loginAsDemo('rep');
-                } else {
-                  navigate('my_club');
-                }
+                navigate('my_club');
               }}
               className={navLinkClass(
                 currentView === 'my_club' || currentView === 'request_detail'
@@ -344,17 +339,6 @@ export const Navbar: React.FC = () => {
                           <Users className="w-3.5 h-3.5 text-[#2D4A35]" />
                           Manage Clubs
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            loginAsDemo('rep');
-                          }}
-                          className="w-full flex items-center gap-2.5 px-4 py-2 text-xs font-medium text-[#4A554E] hover:bg-[#FAF8F2] cursor-pointer"
-                        >
-                          <User className="w-3.5 h-3.5" />
-                          Switch to Club Rep (Alice)
-                        </button>
                       </>
                     ) : (
                       <>
@@ -368,17 +352,6 @@ export const Navbar: React.FC = () => {
                         >
                           <User className="w-3.5 h-3.5 text-[#2D4A35]" />
                           My Club Management
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setMenuOpen(false);
-                            loginAsDemo('admin');
-                          }}
-                          className="w-full flex items-center gap-2.5 px-4 py-2 text-xs font-medium text-[#4A554E] hover:bg-[#FAF8F2] cursor-pointer"
-                        >
-                          <ShieldCheck className="w-3.5 h-3.5" />
-                          Switch to Admin View
                         </button>
                       </>
                     )}
@@ -413,17 +386,10 @@ export const Navbar: React.FC = () => {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => loginAsDemo('admin')}
-                className="px-3.5 py-2 rounded-lg text-xs font-medium text-[#2D4A35] bg-[#EEF3EC] hover:bg-[#DCE7D8] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-              >
-                Admin Demo
-              </button>
-              <button
-                type="button"
-                onClick={() => loginAsDemo('rep')}
+                onClick={() => navigate('home')}
                 className="px-4 py-2 rounded-lg text-xs font-medium text-white bg-[#2D4A35] hover:bg-[#233B2A] transition-colors whitespace-nowrap shrink-0 cursor-pointer"
               >
-                Club Rep Demo
+                Log in
               </button>
             </div>
           )}
@@ -459,11 +425,7 @@ export const Navbar: React.FC = () => {
           <button
             type="button"
             onClick={() => {
-              if (!currentUser) {
-                loginAsDemo('rep');
-              } else {
-                navigate('my_club');
-              }
+              navigate('my_club');
             }}
             className={navLinkClass(
               currentView === 'my_club' || currentView === 'request_detail'
