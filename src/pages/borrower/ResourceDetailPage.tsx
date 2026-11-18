@@ -15,7 +15,6 @@ import { getResourceAvailability, useApp } from '../../context/AppContext';
 export const ResourceDetailPage: React.FC = () => {
   const {
     selectedResourceId,
-    resources,
     currentUser,
     navigate,
     getClubById,
@@ -23,7 +22,7 @@ export const ResourceDetailPage: React.FC = () => {
     showToast,
   } = useApp();
 
-  const resource = getResourceById(selectedResourceId) || resources[0];
+  const resource = getResourceById(selectedResourceId);
   const ownerClub = getClubById(resource?.clubId);
   const [activeImageIdx, setActiveImageIdx] = useState(0);
 

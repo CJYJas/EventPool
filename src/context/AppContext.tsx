@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   INITIAL_ACCESS_REQUESTS,
   INITIAL_CLUBS,
@@ -189,6 +189,8 @@ interface AppContextValue {
   toastMessage: string | null;
   /** False until the stored session (if any) has been checked against the backend. */
   authReady: boolean;
+  /** Remember resources/clubs fetched from the API so detail pages can look them up by id. Not persisted. */
+  cacheRemoteData: (data: { resources?: Resource[]; clubs?: Club[] }) => void;
   setMarketplaceSearch: (value: string) => void;
   showToast: (msg: string) => void;
   navigate: (
@@ -254,6 +256,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null);
   const [authReady, setAuthReady] = useState(false);
+  const [remoteResources, setRemoteResources] = useState<Resource[]>([]);
+  const [remoteClubs, setRemoteClubs] = useState<Club[]>([]);
+
+  const cacheRemoteData: AppContextValue['cacheRemoteData'] = useCallback((data) => {
+    const merge = <T extends { id: string }>(prev: T[], incoming: T[]) => {
+      const byId = new Map(prev.map((x) => [x.id, x]));
+      incoming.forEach((x) => byId.set(x.id, x));
+      return Array.from(byId.values());
+    };
+    if (data.resources?.length) setRemoteResources((prev) => merge(prev, data.resources!));
+    if (data.clubs?.length) setRemoteClubs((prev) => merge(prev, data.clubs!));
+  }, []);
 
   useEffect(() => {
     try {
@@ -922,14 +936,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Demo data restored to initial state.');
   };
 
+  // API data is layered over the local demo data; API ids win on a clash.
   const clubMap = useMemo(
-    () => new Map(state.clubs.map((c) => [c.id, c])),
-    [state.clubs]
+    () => new Map([...state.clubs, ...remoteClubs].map((c) => [c.id, c])),
+    [state.clubs, remoteClubs]
   );
 
   const resourceMap = useMemo(
-    () => new Map(state.resources.map((r) => [r.id, r])),
-    [state.resources]
+    () => new Map([...state.resources, ...remoteResources].map((r) => [r.id, r])),
+    [state.resources, remoteResources]
   );
 
   const requestMap = useMemo(
@@ -959,6 +974,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         marketplaceSearch,
         toastMessage,
         authReady,
+        cacheRemoteData,
         setMarketplaceSearch,
         showToast,
         navigate,
