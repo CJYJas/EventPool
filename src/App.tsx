@@ -3,6 +3,7 @@ import { AccessRestricted } from './components/AccessRestricted';
 import { Layout } from './components/Layout';
 import { AppProvider, useApp } from './context/AppContext';
 import { checkViewAccess } from './context/viewAccess';
+import { AdminClubsPage } from './pages/AdminClubsPage';
 import { AdminDashboardPage } from './pages/AdminDashboardPage';
 import { ClubDetailPage } from './pages/ClubDetailPage';
 import { ClubsPage } from './pages/ClubsPage';
@@ -22,7 +23,8 @@ const AppShell: React.FC = () => {
       case 'home':
         return <HomePage />;
       case 'clubs':
-        return <ClubsPage />;
+        // Administrators get the live club-account manager; everyone else sees the public directory
+        return currentUser?.role === 'admin' ? <AdminClubsPage /> : <ClubsPage />;
       case 'club_detail':
         return <ClubDetailPage />;
       case 'marketplace':
