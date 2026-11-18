@@ -21,13 +21,6 @@ export const IMAGES = {
 
 export const REFERENCE_TODAY = '2026-11-14';
 
-export const ADMIN_ACCOUNT = {
-  name: 'Dr. Faris Hakim',
-  email: 'admin@um.edu.my',
-  password: 'admin123',
-  roleLabel: 'UM Student Affairs · Admin',
-};
-
 export const INITIAL_CLUBS: Club[] = [
   {
     id: 'club-pekom',

@@ -259,7 +259,16 @@ export const MyClubPage: React.FC = () => {
     }
   }, [activeReturnItem?.id, activeReturnItem?.requestedQuantity]);
 
-  if (!club) return null;
+  if (!club) {
+    return (
+      <div className="max-w-xl mx-auto py-20 px-4 text-center space-y-2" role="status">
+        <h2 className="text-xl font-bold text-[#1F3626]">Club workspace not available yet</h2>
+        <p className="text-sm text-[#4A554E]">
+          You are signed in, but no club data is linked to this account yet. Please contact UM Admin.
+        </p>
+      </div>
+    );
+  }
 
   const handleVerifySubmit = (e: React.FormEvent) => {
     e.preventDefault();

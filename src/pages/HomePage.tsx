@@ -21,6 +21,7 @@ import { InlineAlert } from '../components/StateBlocks';
 import { StatusBadge } from '../components/StatusBadge';
 import { IMAGES } from '../data/seedData';
 import { getResourceAvailability, useApp } from '../context/AppContext';
+import { validateLoginInput, type LoginFieldErrors } from '../services/auth';
 
 export const HomePage: React.FC = () => {
   const {
@@ -28,10 +29,8 @@ export const HomePage: React.FC = () => {
     resources,
     requests,
     currentUser,
-    lockoutRemainingSec,
     navigate,
     login,
-    loginAsDemo,
     getClubById,
     getResourceById,
   } = useApp();
@@ -41,6 +40,8 @@ export const HomePage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loginErrorTone, setLoginErrorTone] = useState<'error' | 'warning'>('error');
+  const [fieldErrors, setFieldErrors] = useState<LoginFieldErrors>({});
+  const [signingIn, setSigningIn] = useState(false);
   const [forgotOpen, setForgotOpen] = useState(false);
   const [requestAccessOpen, setRequestAccessOpen] = useState(false);
 
@@ -91,22 +92,26 @@ export const HomePage: React.FC = () => {
     };
   }, [clubs, resources, requests, getResourceById]);
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (signingIn) return;
     setLoginError('');
-    if (!email.trim() || !password) {
-      setLoginErrorTone('error');
-      setLoginError('Please enter both your UM email and password.');
-      return;
-    }
-    const result = login(email, password);
+
+    const errors = validateLoginInput(email, password);
+    setFieldErrors(errors);
+    if (errors.email || errors.password) return;
+
+    setSigningIn(true);
+    const result = await login(email, password);
+    setSigningIn(false);
     if (!result.ok) {
       setLoginErrorTone(
-        result.code === 'too_many_attempts' || result.code === 'disabled_account'
-          ? 'warning'
-          : 'error'
+        result.code === 'invalid_credentials' || result.code === 'unknown'
+          ? 'error'
+          : 'warning'
       );
       setLoginError(result.error || 'Login failed.');
+      setPassword('');
     }
   };
 
@@ -169,19 +174,10 @@ export const HomePage: React.FC = () => {
                     For UM student club representatives &amp; administrators
                   </p>
 
-                  {lockoutRemainingSec > 0 ? (
-                    <div className="mt-3">
-                      <InlineAlert
-                        tone="warning"
-                        message={`Too many failed login attempts. Login is locked for ${lockoutRemainingSec}s.`}
-                      />
+                  {loginError && (
+                    <div className="mt-3" role="alert">
+                      <InlineAlert tone={loginErrorTone} message={loginError} />
                     </div>
-                  ) : (
-                    loginError && (
-                      <div className="mt-3">
-                        <InlineAlert tone={loginErrorTone} message={loginError} />
-                      </div>
-                    )
                   )}
 
                   <form
@@ -190,37 +186,56 @@ export const HomePage: React.FC = () => {
                     className="mt-4 space-y-3.5"
                   >
                     <div>
-                      <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                      <label htmlFor="login-email" className="block text-xs font-semibold text-[#1F3626] mb-1">
                         UM email *
                       </label>
                       <div className="relative">
                         <Mail className="w-4 h-4 text-[#858F87] absolute left-3 top-1/2 -translate-y-1/2" />
                         <input
+                          id="login-email"
                           type="email"
-                          required
-                          disabled={lockoutRemainingSec > 0}
+                          autoComplete="username"
+                          disabled={signingIn}
+                          aria-invalid={fieldErrors.email ? true : undefined}
+                          aria-describedby={fieldErrors.email ? 'login-email-error' : undefined}
                           value={email}
                           onChange={(e) => setEmail(e.target.value)}
                           placeholder="e.g. name@um.edu.my"
-                          className="w-full h-10 pl-9 pr-3 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626] placeholder:text-[#98A099] focus:border-[#2D4A35] focus:outline-none disabled:bg-[#F5F2EA]"
+                          className={`w-full h-10 pl-9 pr-3 rounded-xl border text-sm text-[#1F3626] placeholder:text-[#98A099] focus:outline-none disabled:bg-[#F5F2EA] ${
+                            fieldErrors.email
+                              ? 'border-rose-400 focus:border-rose-500'
+                              : 'border-[#D4D1C7] focus:border-[#2D4A35]'
+                          }`}
                         />
                       </div>
+                      {fieldErrors.email && (
+                        <p id="login-email-error" className="mt-1 text-[11px] text-rose-700">
+                          {fieldErrors.email}
+                        </p>
+                      )}
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                      <label htmlFor="login-password" className="block text-xs font-semibold text-[#1F3626] mb-1">
                         Password *
                       </label>
                       <div className="relative">
                         <Lock className="w-4 h-4 text-[#858F87] absolute left-3 top-1/2 -translate-y-1/2" />
                         <input
+                          id="login-password"
                           type={showPassword ? 'text' : 'password'}
-                          required
-                          disabled={lockoutRemainingSec > 0}
+                          autoComplete="current-password"
+                          disabled={signingIn}
+                          aria-invalid={fieldErrors.password ? true : undefined}
+                          aria-describedby={fieldErrors.password ? 'login-password-error' : undefined}
                           value={password}
                           onChange={(e) => setPassword(e.target.value)}
                           placeholder="Enter your password"
-                          className="w-full h-10 pl-9 pr-10 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626] placeholder:text-[#98A099] focus:border-[#2D4A35] focus:outline-none disabled:bg-[#F5F2EA]"
+                          className={`w-full h-10 pl-9 pr-10 rounded-xl border text-sm text-[#1F3626] placeholder:text-[#98A099] focus:outline-none disabled:bg-[#F5F2EA] ${
+                            fieldErrors.password
+                              ? 'border-rose-400 focus:border-rose-500'
+                              : 'border-[#D4D1C7] focus:border-[#2D4A35]'
+                          }`}
                         />
                         <button
                           type="button"
@@ -237,16 +252,19 @@ export const HomePage: React.FC = () => {
                           )}
                         </button>
                       </div>
+                      {fieldErrors.password && (
+                        <p id="login-password-error" className="mt-1 text-[11px] text-rose-700">
+                          {fieldErrors.password}
+                        </p>
+                      )}
                     </div>
 
                     <button
                       type="submit"
-                      disabled={lockoutRemainingSec > 0}
+                      disabled={signingIn}
                       className="w-full h-10 rounded-xl bg-[#2D4A35] hover:bg-[#233B2A] disabled:bg-[#9BA89E] text-white text-sm font-semibold transition-colors cursor-pointer"
                     >
-                      {lockoutRemainingSec > 0
-                        ? `Locked (${lockoutRemainingSec}s)`
-                        : 'Login'}
+                      {signingIn ? 'Signing in...' : 'Login'}
                     </button>
                   </form>
 
@@ -279,24 +297,6 @@ export const HomePage: React.FC = () => {
                       EventPool is for authorised UM student club
                       representatives and system administrators.
                     </span>
-                  </div>
-
-                  {/* Quick Demo Sign-in */}
-                  <div className="mt-3 pt-3 border-t border-[#EFECE3] grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => loginAsDemo('rep')}
-                      className="h-8 rounded-lg bg-[#F5F2EA] hover:bg-[#EAE5D7] text-[11px] font-semibold text-[#1F3626] cursor-pointer"
-                    >
-                      Demo: Club Rep
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => loginAsDemo('admin')}
-                      className="h-8 rounded-lg bg-[#EEF3EC] hover:bg-[#DCE7D8] text-[11px] font-semibold text-[#2D4A35] cursor-pointer"
-                    >
-                      Demo: Admin
-                    </button>
                   </div>
                 </div>
               ) : (
