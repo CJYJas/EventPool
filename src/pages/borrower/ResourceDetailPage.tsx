@@ -10,26 +10,50 @@ import {
 import { ClubLogo } from '../../components/ClubLogo';
 import { ResourceImage } from '../../components/ResourceImage';
 import { StatusBadge } from '../../components/StatusBadge';
+import { EmptyState, ErrorRetryState, LoadingSkeleton } from '../../components/StateBlocks';
 import { getResourceAvailability, useApp } from '../../context/AppContext';
+import { useResourceDetail } from '../../hooks/useResourceDetail';
+import { getRequestBlocker } from '../../services/borrowing';
 
 export const ResourceDetailPage: React.FC = () => {
-  const {
-    selectedResourceId,
-    currentUser,
-    navigate,
-    getClubById,
-    getResourceById,
-    showToast,
-  } = useApp();
-
-  const resource = getResourceById(selectedResourceId);
-  const ownerClub = getClubById(resource?.clubId);
+  const { selectedResourceId, currentUser, navigate } = useApp();
+  const { resource, club: ownerClub, status, error, reload } = useResourceDetail(selectedResourceId);
   const [activeImageIdx, setActiveImageIdx] = useState(0);
+
+  const backToMarketplace = (
+    <button
+      type="button"
+      onClick={() => navigate('marketplace')}
+      className="inline-flex items-center gap-2 text-sm font-medium text-[#2D4A35] hover:text-[#1F3626] cursor-pointer"
+    >
+      <ArrowLeft className="w-4 h-4" />
+      Back to Marketplace
+    </button>
+  );
+
+  if (status === 'not_found') {
+    return (
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-8 space-y-6">
+        {backToMarketplace}
+        <EmptyState
+          title="Resource not found"
+          description="This resource may have been removed or archived by its owner club."
+          actionLabel="Browse Marketplace"
+          onAction={() => navigate('marketplace')}
+        />
+      </div>
+    );
+  }
 
   if (!resource) {
     return (
-      <div className="max-w-[1380px] mx-auto px-4 sm:px-6 py-12">
-        <p className="text-sm text-[#4A554E]">Resource not found.</p>
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-8 space-y-6">
+        {backToMarketplace}
+        {status === 'error' ? (
+          <ErrorRetryState message={error} onRetry={reload} />
+        ) : (
+          <LoadingSkeleton rows={4} />
+        )}
       </div>
     );
   }
@@ -37,14 +61,10 @@ export const ResourceDetailPage: React.FC = () => {
   const images = resource.images.length > 0 ? resource.images : [''];
   const safeIdx = activeImageIdx % images.length;
   const availability = getResourceAvailability(resource, ownerClub);
-  const isOwnClub = currentUser?.clubId === resource.clubId;
+  const isOwnClub = Boolean(currentUser?.clubId) && currentUser?.clubId === resource.clubId;
   const isClubInactive = ownerClub?.status === 'Inactive';
-  const canRequest =
-    availability === 'Available' &&
-    resource.availableUnits > 0 &&
-    !isOwnClub &&
-    !isClubInactive &&
-    currentUser?.role !== 'admin';
+  // Same rules the borrowing form enforces: own club, unavailable, archived or inactive owner cannot be requested
+  const canRequest = getRequestBlocker(resource, ownerClub, currentUser, availability) === null;
 
   const handleRequestBorrow = () => {
     // navigate() sends signed-out users to the login screen
@@ -138,6 +158,14 @@ export const ResourceDetailPage: React.FC = () => {
             >
               {ownerClub?.acronym || 'UM Club'}
             </button>
+            {status === 'error' && (
+              <p className="text-xs text-[#8C2220] mt-1">
+                Could not refresh this resource. Showing the last loaded details.{' '}
+                <button type="button" onClick={reload} className="underline cursor-pointer">
+                  Retry
+                </button>
+              </p>
+            )}
           </div>
 
           <div className="border-y border-[#EFECE3] py-4 space-y-2.5 text-sm">
