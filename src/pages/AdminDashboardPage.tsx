@@ -12,11 +12,11 @@ import {
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import {
-  CreateClubModal,
   DeactivateClubModal,
   EditClubModal,
 } from '../components/ClubAdminModals';
 import { ClubLogo } from '../components/ClubLogo';
+import { CreateClubAccountModal } from '../components/CreateClubAccountModal';
 import { PageHeader } from '../components/PageHeader';
 import { StatusBadge } from '../components/StatusBadge';
 import { useApp } from '../context/AppContext';
@@ -30,6 +30,7 @@ export const AdminDashboardPage: React.FC = () => {
     requests,
     accessRequests,
     navigate,
+    showToast,
     reactivateClub,
     processAccessRequest,
     getClubById,
@@ -481,7 +482,15 @@ export const AdminDashboardPage: React.FC = () => {
       </div>
 
       {/* Admin Club Modals */}
-      <CreateClubModal open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateClubAccountModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(club) => {
+          setCreateOpen(false);
+          showToast(`${club.clubName} was created.`);
+          navigate('clubs');
+        }}
+      />
       <EditClubModal club={editingClub} onClose={() => setEditingClub(null)} />
       <DeactivateClubModal
         club={deactivatingClub}
