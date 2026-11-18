@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Check,
   ChevronDown,
@@ -9,16 +9,29 @@ import {
 } from 'lucide-react';
 import { PageHeader } from '../../components/PageHeader';
 import { ResourceCard } from '../../components/ResourceCard';
-import {
-  EmptyState,
-  ErrorRetryState,
-  LoadingSkeleton,
-} from '../../components/StateBlocks';
+import { EmptyState, ErrorRetryState } from '../../components/StateBlocks';
 import { getResourceAvailability, useApp } from '../../context/AppContext';
-import type { ResourceAvailability, ResourceCategory } from '../../types/eventpool';
+import { ApiError } from '../../services/api';
+import {
+  fetchClubDirectory,
+  fetchResourcePage,
+  getPageWindow,
+  type Pagination,
+} from '../../services/resources';
+import type {
+  Club,
+  Resource,
+  ResourceAvailability,
+  ResourceCategory,
+} from '../../types/eventpool';
 
-const CATEGORIES: Array<'All Categories' | ResourceCategory> = [
-  'All Categories',
+const ALL_CATEGORIES = 'All Categories';
+const ALL_AVAILABILITY = 'All Availability';
+const ALL_CLUBS = 'All Clubs';
+const ALL_LOCATIONS = 'All Locations';
+
+const CATEGORIES: Array<typeof ALL_CATEGORIES | ResourceCategory> = [
+  ALL_CATEGORIES,
   'Furniture',
   'Audio Equipment',
   'Lighting',
@@ -26,8 +39,8 @@ const CATEGORIES: Array<'All Categories' | ResourceCategory> = [
   'Decorations',
 ];
 
-const AVAILABILITIES: Array<'All Availability' | ResourceAvailability> = [
-  'All Availability',
+const AVAILABILITIES: Array<typeof ALL_AVAILABILITY | ResourceAvailability> = [
+  ALL_AVAILABILITY,
   'Available',
   'Reserved',
   'Borrowed',
@@ -35,40 +48,146 @@ const AVAILABILITIES: Array<'All Availability' | ResourceAvailability> = [
 ];
 
 const PAGE_SIZE = 8;
+const SEARCH_DEBOUNCE_MS = 300;
+const FACET_LIMIT = 100;
+
+function describeLoadError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.code === 'NETWORK_ERROR' || err.status === 0) {
+      return 'Cannot reach the EventPool server. Check your connection and try again.';
+    }
+    if (err.status >= 500) return 'The server had a problem loading resources. Please try again.';
+    return err.message;
+  }
+  return 'Something went wrong while loading resources.';
+}
+
+const CardGridSkeleton: React.FC = () => (
+  <div
+    className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 animate-pulse"
+    aria-busy="true"
+    aria-label="Loading resources"
+  >
+    {Array.from({ length: 4 }).map((_, i) => (
+      <div key={i} className="h-72 rounded-3xl bg-[#EFECE3]/80 border border-[#E5E2D9]" />
+    ))}
+  </div>
+);
 
 export const MarketplacePage: React.FC = () => {
   const {
-    clubs,
-    resources,
     marketplaceSearch,
     setMarketplaceSearch,
     navigate,
     getClubById,
+    cacheRemoteData,
   } = useApp();
 
-  const [category, setCategory] = useState<'All Categories' | ResourceCategory>(
-    'All Categories'
-  );
-  const [availability, setAvailability] = useState<
-    'All Availability' | ResourceAvailability
-  >('All Availability');
-  const [owningClubId, setOwningClubId] = useState<string>('All Clubs');
-  const [location, setLocation] = useState<string>('All Locations');
+  const [category, setCategory] = useState<string>(ALL_CATEGORIES);
+  const [availability, setAvailability] = useState<string>(ALL_AVAILABILITY);
+  const [owningClubId, setOwningClubId] = useState<string>(ALL_CLUBS);
+  const [location, setLocation] = useState<string>(ALL_LOCATIONS);
   const [categoryOpen, setCategoryOpen] = useState(false);
-  const [page, setPage] = useState(1);
-  const [isLoading, setIsLoading] = useState(false);
-  const [loadError, setLoadError] = useState('');
 
-  const handleRefreshResources = () => {
-    setLoadError('');
+  // Keyword is sent to the API only after the user stops typing
+  const [keyword, setKeyword] = useState(marketplaceSearch.trim());
+  useEffect(() => {
+    const t = window.setTimeout(() => setKeyword(marketplaceSearch.trim()), SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [marketplaceSearch]);
+
+  // Page is remembered per filter combination, so changing any filter returns to page 1
+  // without firing a second request.
+  const filterKey = JSON.stringify([keyword, category, availability, owningClubId, location]);
+  const [pageState, setPageState] = useState({ key: filterKey, page: 1 });
+  const page = pageState.key === filterKey ? pageState.page : 1;
+  const setPage = (next: number) => setPageState({ key: filterKey, page: next });
+
+  const [items, setItems] = useState<Resource[]>([]);
+  const [pagination, setPagination] = useState<Pagination | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+
+  const [clubs, setClubs] = useState<Club[]>([]);
+  const [locations, setLocations] = useState<string[]>([]);
+
+  const requestSeq = useRef(0);
+
+  // Resource list: GET /api/resources, or /api/resources/search when a keyword is set
+  useEffect(() => {
+    const seq = ++requestSeq.current;
     setIsLoading(true);
-    window.setTimeout(() => {
-      setIsLoading(false);
-    }, 220);
-  };
+    setLoadError('');
+
+    fetchResourcePage({
+      q: keyword,
+      category: category === ALL_CATEGORIES ? undefined : category,
+      status: availability === ALL_AVAILABILITY ? undefined : availability,
+      clubId: owningClubId === ALL_CLUBS ? undefined : owningClubId,
+      location: location === ALL_LOCATIONS ? undefined : location,
+      page,
+      limit: PAGE_SIZE,
+    })
+      .then((result) => {
+        if (seq !== requestSeq.current) return; // a newer request superseded this one
+        // Asked for a page past the end (e.g. results shrank): jump to the last page
+        if (result.items.length === 0 && page > 1 && result.pagination.total > 0) {
+          setPageState({ key: filterKey, page: result.pagination.totalPages });
+          return;
+        }
+        cacheRemoteData({ resources: result.items });
+        setItems(result.items);
+        setPagination(result.pagination);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (seq !== requestSeq.current) return;
+        setItems([]);
+        setPagination(null);
+        setLoadError(describeLoadError(err));
+        setIsLoading(false);
+      });
+    // filterKey already encodes keyword/category/availability/owningClubId/location
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, page, reloadKey, cacheRemoteData]);
+
+  // One-off facets: club names for the owner filter and the known locations
+  useEffect(() => {
+    let cancelled = false;
+    fetchClubDirectory()
+      .then((list) => {
+        if (cancelled) return;
+        const active = list.filter((c) => c.status === 'Active');
+        setClubs(active);
+        cacheRemoteData({ clubs: list });
+      })
+      .catch(() => {
+        /* owner filter simply stays empty; the list itself reports its own errors */
+      });
+    fetchResourcePage({ limit: FACET_LIMIT })
+      .then((result) => {
+        if (cancelled) return;
+        setLocations(
+          Array.from(new Set(result.items.map((r) => r.location).filter(Boolean))).sort()
+        );
+      })
+      .catch(() => {
+        /* fall back to locations seen in the current results */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cacheRemoteData]);
+
+  const locationOptions = useMemo(() => {
+    const seen = new Set(locations);
+    items.forEach((r) => r.location && seen.add(r.location));
+    if (location !== ALL_LOCATIONS) seen.add(location);
+    return [ALL_LOCATIONS, ...Array.from(seen).sort()];
+  }, [locations, items, location]);
 
   const catRef = useRef<HTMLDivElement>(null);
-
   useEffect(() => {
     const onDocClick = (e: MouseEvent) => {
       if (catRef.current && !catRef.current.contains(e.target as Node)) {
@@ -79,52 +198,10 @@ export const MarketplacePage: React.FC = () => {
     return () => document.removeEventListener('mousedown', onDocClick);
   }, []);
 
-  const activeResources = useMemo(
-    () => resources.filter((r) => !r.archived),
-    [resources]
+  const clubName = useCallback(
+    (id: string) => clubs.find((c) => c.id === id)?.name || getClubById(id)?.name || id,
+    [clubs, getClubById]
   );
-
-  const uniqueLocations = useMemo(() => {
-    const locs = Array.from(new Set(activeResources.map((r) => r.location)));
-    return ['All Locations', ...locs];
-  }, [activeResources]);
-
-  const filtered = useMemo(() => {
-    const q = marketplaceSearch.trim().toLowerCase();
-    return activeResources.filter((res) => {
-      const club = getClubById(res.clubId);
-      const status = getResourceAvailability(res, club);
-
-      if (category !== 'All Categories' && res.category !== category) {
-        return false;
-      }
-      if (availability !== 'All Availability' && status !== availability) {
-        return false;
-      }
-      if (owningClubId !== 'All Clubs' && res.clubId !== owningClubId) {
-        return false;
-      }
-      if (location !== 'All Locations' && res.location !== location) {
-        return false;
-      }
-      if (!q) return true;
-      return (
-        res.name.toLowerCase().includes(q) ||
-        res.category.toLowerCase().includes(q) ||
-        res.location.toLowerCase().includes(q) ||
-        (club?.acronym.toLowerCase().includes(q) ?? false) ||
-        (club?.name.toLowerCase().includes(q) ?? false)
-      );
-    });
-  }, [
-    activeResources,
-    marketplaceSearch,
-    category,
-    availability,
-    owningClubId,
-    location,
-    getClubById,
-  ]);
 
   const appliedFilters = useMemo(() => {
     const chips: Array<{ key: string; label: string; clear: () => void }> = [];
@@ -135,65 +212,33 @@ export const MarketplacePage: React.FC = () => {
         clear: () => setMarketplaceSearch(''),
       });
     }
-    if (category !== 'All Categories') {
-      chips.push({
-        key: 'category',
-        label: `Category: ${category}`,
-        clear: () => setCategory('All Categories'),
-      });
+    if (category !== ALL_CATEGORIES) {
+      chips.push({ key: 'category', label: `Category: ${category}`, clear: () => setCategory(ALL_CATEGORIES) });
     }
-    if (availability !== 'All Availability') {
-      chips.push({
-        key: 'availability',
-        label: `Status: ${availability}`,
-        clear: () => setAvailability('All Availability'),
-      });
+    if (availability !== ALL_AVAILABILITY) {
+      chips.push({ key: 'availability', label: `Status: ${availability}`, clear: () => setAvailability(ALL_AVAILABILITY) });
     }
-    if (owningClubId !== 'All Clubs') {
-      const club = getClubById(owningClubId);
-      chips.push({
-        key: 'club',
-        label: `Owner: ${club?.acronym || owningClubId}`,
-        clear: () => setOwningClubId('All Clubs'),
-      });
+    if (owningClubId !== ALL_CLUBS) {
+      chips.push({ key: 'club', label: `Owner: ${clubName(owningClubId)}`, clear: () => setOwningClubId(ALL_CLUBS) });
     }
-    if (location !== 'All Locations') {
-      chips.push({
-        key: 'location',
-        label: `Location: ${location}`,
-        clear: () => setLocation('All Locations'),
-      });
+    if (location !== ALL_LOCATIONS) {
+      chips.push({ key: 'location', label: `Location: ${location}`, clear: () => setLocation(ALL_LOCATIONS) });
     }
     return chips;
-  }, [
-    marketplaceSearch,
-    category,
-    availability,
-    owningClubId,
-    location,
-    setMarketplaceSearch,
-    getClubById,
-  ]);
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pageItems = filtered.slice(
-    (safePage - 1) * PAGE_SIZE,
-    safePage * PAGE_SIZE
-  );
-
-  useEffect(() => {
-    setPage(1);
-  }, [marketplaceSearch, category, availability, owningClubId, location]);
+  }, [marketplaceSearch, category, availability, owningClubId, location, setMarketplaceSearch, clubName]);
 
   const clearFilters = () => {
     setMarketplaceSearch('');
-    setCategory('All Categories');
-    setAvailability('All Availability');
-    setOwningClubId('All Clubs');
-    setLocation('All Locations');
-    setPage(1);
+    setKeyword('');
+    setCategory(ALL_CATEGORIES);
+    setAvailability(ALL_AVAILABILITY);
+    setOwningClubId(ALL_CLUBS);
+    setLocation(ALL_LOCATIONS);
   };
+
+  const total = pagination?.total ?? 0;
+  const totalPages = pagination?.totalPages ?? 1;
+  const hasFilters = appliedFilters.length > 0;
 
   return (
     <div className="max-w-[1380px] mx-auto px-4 sm:px-6 py-8 space-y-6">
@@ -211,6 +256,7 @@ export const MarketplacePage: React.FC = () => {
             type="search"
             value={marketplaceSearch}
             onChange={(e) => setMarketplaceSearch(e.target.value)}
+            aria-label="Search equipment"
             placeholder="Search equipment..."
             className="w-full h-10 pl-10 pr-4 rounded-full bg-white text-sm text-[#1F3626] placeholder:text-[#737B74] border border-transparent focus:border-[#2D4A35] focus:outline-none"
           />
@@ -221,6 +267,8 @@ export const MarketplacePage: React.FC = () => {
           <button
             type="button"
             onClick={() => setCategoryOpen((v) => !v)}
+            aria-haspopup="listbox"
+            aria-expanded={categoryOpen}
             className="h-10 px-4 rounded-full bg-white text-sm font-medium text-[#1F3626] border border-[#DCD7C9] flex items-center gap-2.5 cursor-pointer whitespace-nowrap"
           >
             <span>{category}</span>
@@ -228,13 +276,18 @@ export const MarketplacePage: React.FC = () => {
           </button>
 
           {categoryOpen && (
-            <div className="absolute left-0 mt-2 w-52 bg-white rounded-2xl border border-[#E5E2D9] shadow-lg py-1.5 z-30">
+            <div
+              role="listbox"
+              className="absolute left-0 mt-2 w-52 bg-white rounded-2xl border border-[#E5E2D9] shadow-lg py-1.5 z-30"
+            >
               {CATEGORIES.map((cat) => {
                 const selected = category === cat;
                 return (
                   <button
                     key={cat}
                     type="button"
+                    role="option"
+                    aria-selected={selected}
                     onClick={() => {
                       setCategory(cat);
                       setCategoryOpen(false);
@@ -261,21 +314,17 @@ export const MarketplacePage: React.FC = () => {
           aria-label="Filter by owning club"
           className="h-10 px-4 rounded-full bg-white text-sm font-medium text-[#1F3626] border border-[#DCD7C9] focus:border-[#2D4A35] focus:outline-none max-w-[190px] cursor-pointer"
         >
-          <option value="All Clubs">All Owning Clubs</option>
+          <option value={ALL_CLUBS}>All Owning Clubs</option>
           {clubs.map((club) => (
             <option key={club.id} value={club.id}>
-              {club.acronym}
+              {club.name}
             </option>
           ))}
         </select>
 
         <select
           value={availability}
-          onChange={(e) =>
-            setAvailability(
-              e.target.value as 'All Availability' | ResourceAvailability
-            )
-          }
+          onChange={(e) => setAvailability(e.target.value)}
           aria-label="Filter by availability"
           className="h-10 px-4 rounded-full bg-white text-sm font-medium text-[#1F3626] border border-[#DCD7C9] focus:border-[#2D4A35] focus:outline-none cursor-pointer"
         >
@@ -292,7 +341,7 @@ export const MarketplacePage: React.FC = () => {
           aria-label="Filter by location"
           className="h-10 px-4 rounded-full bg-white text-sm font-medium text-[#1F3626] border border-[#DCD7C9] focus:border-[#2D4A35] focus:outline-none max-w-[200px] cursor-pointer"
         >
-          {uniqueLocations.map((loc) => (
+          {locationOptions.map((loc) => (
             <option key={loc} value={loc}>
               {loc}
             </option>
@@ -310,7 +359,7 @@ export const MarketplacePage: React.FC = () => {
       </div>
 
       {/* Applied Filters Summary */}
-      {appliedFilters.length > 0 && (
+      {hasFilters && (
         <div className="flex flex-wrap items-center gap-2 text-xs">
           <span className="text-[#6B766E] font-medium">Applied filters:</span>
           {appliedFilters.map((f) => (
@@ -318,6 +367,7 @@ export const MarketplacePage: React.FC = () => {
               key={f.key}
               type="button"
               onClick={f.clear}
+              aria-label={`Remove filter ${f.label}`}
               className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-[#DCE7D8] text-[#1F3626] font-medium hover:bg-[#CBDAC5] cursor-pointer"
             >
               <span>{f.label}</span>
@@ -330,20 +380,22 @@ export const MarketplacePage: React.FC = () => {
       {/* Results Header */}
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-xl font-bold text-[#1F3626]">
-          {appliedFilters.length > 0 ? 'Filtered Resources' : 'Available Resources'}
+          {hasFilters ? 'Filtered Resources' : 'Available Resources'}
         </h2>
         <div className="flex items-center gap-3">
-          <p className="text-xs text-[#6B766E] tabular-nums">
-            {filtered.length === 0
-              ? 'Showing 0 resources'
-              : `Showing ${(safePage - 1) * PAGE_SIZE + 1}–${Math.min(
-                  safePage * PAGE_SIZE,
-                  filtered.length
-                )} of ${filtered.length} resources`}
+          <p className="text-xs text-[#6B766E] tabular-nums" aria-live="polite">
+            {isLoading
+              ? 'Loading...'
+              : loadError || total === 0
+                ? 'Showing 0 resources'
+                : `Showing ${(page - 1) * PAGE_SIZE + 1}–${Math.min(
+                    page * PAGE_SIZE,
+                    total
+                  )} of ${total} resources`}
           </p>
           <button
             type="button"
-            onClick={handleRefreshResources}
+            onClick={() => setReloadKey((k) => k + 1)}
             aria-label="Refresh resources"
             className="inline-flex items-center gap-1.5 px-3 h-8 rounded-full border border-[#D4D1C7] bg-white text-xs font-medium text-[#3D4B41] hover:bg-[#FAF8F2] cursor-pointer"
           >
@@ -355,33 +407,34 @@ export const MarketplacePage: React.FC = () => {
 
       {/* Resource Cards Grid or Loading / Error / No-Results State */}
       {loadError ? (
-        <ErrorRetryState
-          message={loadError}
-          onRetry={handleRefreshResources}
-        />
+        <ErrorRetryState message={loadError} onRetry={() => setReloadKey((k) => k + 1)} />
       ) : isLoading ? (
-        <LoadingSkeleton rows={4} />
-      ) : pageItems.length === 0 ? (
-        <EmptyState
-          title="No matching resources found"
-          description="No equipment matches your currently applied filters. Try removing one or more filters to explore all shared UM club resources."
-          actionLabel="Clear All Filters"
-          onAction={clearFilters}
-        />
+        <CardGridSkeleton />
+      ) : items.length === 0 ? (
+        hasFilters ? (
+          <EmptyState
+            title="No matching resources found"
+            description="No equipment matches your currently applied filters. Try removing one or more filters to explore all shared UM club resources."
+            actionLabel="Clear All Filters"
+            onAction={clearFilters}
+          />
+        ) : (
+          <EmptyState
+            title="No resources have been shared yet"
+            description="Once UM clubs list their equipment, it will appear here."
+          />
+        )
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-          {pageItems.map((res) => {
+          {items.map((res) => {
             const club = getClubById(res.clubId);
-            const status = getResourceAvailability(res, club);
             return (
               <ResourceCard
                 key={res.id}
                 resource={res}
                 club={club}
-                availability={status}
-                onSelect={() =>
-                  navigate('resource_detail', { resourceId: res.id })
-                }
+                availability={getResourceAvailability(res, club)}
+                onSelect={() => navigate('resource_detail', { resourceId: res.id })}
               />
             );
           })}
@@ -389,41 +442,48 @@ export const MarketplacePage: React.FC = () => {
       )}
 
       {/* Pagination */}
-      {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 pt-2">
+      {!loadError && totalPages > 1 && (
+        <nav aria-label="Resource pages" className="flex items-center justify-center gap-2 pt-2">
           <button
             type="button"
-            disabled={safePage <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
+            disabled={page <= 1 || isLoading}
+            onClick={() => setPage(Math.max(1, page - 1))}
+            aria-label="Previous page"
             className="w-9 h-9 rounded-full flex items-center justify-center text-sm text-[#4A554E] hover:bg-[#EFECE3] disabled:opacity-40 cursor-pointer"
           >
             &lsaquo;
           </button>
-          {Array.from({ length: totalPages }, (_, idx) => idx + 1).map(
-            (pageNum) => (
+          {getPageWindow(page, totalPages).map((p, idx) =>
+            p === '...' ? (
+              <span key={`gap-${idx}`} className="w-6 text-center text-sm text-[#6B766E]">
+                …
+              </span>
+            ) : (
               <button
-                key={pageNum}
+                key={p}
                 type="button"
-                onClick={() => setPage(pageNum)}
+                disabled={isLoading}
+                onClick={() => setPage(p)}
+                aria-label={`Page ${p}`}
+                aria-current={p === page ? 'page' : undefined}
                 className={`w-9 h-9 rounded-full text-sm font-semibold tabular-nums cursor-pointer ${
-                  pageNum === safePage
-                    ? 'bg-[#2D4A35] text-white'
-                    : 'text-[#4A554E] hover:bg-[#EFECE3]'
+                  p === page ? 'bg-[#2D4A35] text-white' : 'text-[#4A554E] hover:bg-[#EFECE3]'
                 }`}
               >
-                {pageNum}
+                {p}
               </button>
             )
           )}
           <button
             type="button"
-            disabled={safePage >= totalPages}
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            disabled={page >= totalPages || isLoading}
+            onClick={() => setPage(Math.min(totalPages, page + 1))}
+            aria-label="Next page"
             className="w-9 h-9 rounded-full flex items-center justify-center text-sm text-[#4A554E] hover:bg-[#EFECE3] disabled:opacity-40 cursor-pointer"
           >
             &rsaquo;
           </button>
-        </div>
+        </nav>
       )}
     </div>
   );
