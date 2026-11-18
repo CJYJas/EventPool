@@ -128,6 +128,18 @@ export async function fetchResourcePage(query: ResourceQuery): Promise<ResourceP
   return { items: data.items.map(mapApiResource), pagination: data.pagination };
 }
 
+/** GET /api/resources/:resourceId */
+export async function fetchResourceById(resourceId: string): Promise<Resource> {
+  const data = await apiRequest<ApiResource>(`/api/resources/${encodeURIComponent(resourceId)}`);
+  return mapApiResource(data);
+}
+
+/** GET /api/clubs/:clubId */
+export async function fetchClubById(clubId: string): Promise<Club> {
+  const data = await apiRequest<ApiClub>(`/api/clubs/${encodeURIComponent(clubId)}`);
+  return mapApiClub(data);
+}
+
 /** GET /api/clubs */
 export async function fetchClubDirectory(): Promise<Club[]> {
   const data = await apiRequest<ApiClub[]>('/api/clubs');
