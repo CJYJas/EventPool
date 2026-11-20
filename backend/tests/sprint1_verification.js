@@ -1,11 +1,17 @@
 import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import app from '../src/server.js';
 import { auth, db } from '../src/config/firebase.js';
 import dotenv from 'dotenv';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config();
 
-const API_KEY = process.env.FIREBASE_WEB_API_KEY;
+const API_KEY = process.env.FIREBASE_WEB_API_KEY || 'AIzaSyCuxj4pY_b0wDq298coBMXtVm-FdDrLRuQ';
 const TEST_PORT = 5055;
 const BASE_URL = `http://localhost:${TEST_PORT}/api`;
 

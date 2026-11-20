@@ -7,21 +7,36 @@ Built for WIX2002 (Project Management).
 
 ## Getting started
 
-### Frontend (React + Vite)
+### Prerequisites & Installation
 
 ```bash
-npm ci
-npm run dev      # start the frontend dev server, open the URL Vite prints
-npm run build    # production build
+# Install frontend & root dependencies
+npm install --legacy-peer-deps
+
+# Install backend dependencies
+cd backend && npm install && cd ..
 ```
 
-### Backend (Express + Firebase Admin SDK)
+### Running Locally (Frontend + Backend)
+
+Run the backend and frontend in separate terminals:
+
+* **Terminal 1 — Backend API (Express + Firebase Admin SDK):**
+  ```bash
+  npm run dev:backend    # Runs Express API on http://localhost:5000/api
+  ```
+
+* **Terminal 2 — Frontend Client (React 19 + Vite + TypeScript):**
+  ```bash
+  npm run dev            # Runs Vite on http://localhost:3000 (proxies /api to :5000)
+  ```
+
+### Build & Automated Tests
 
 ```bash
-cd backend
-npm install
-npm run dev          # start backend server on http://localhost:5000/api
-npm run test:verify  # execute BE-01 through BE-05 automated test suite
+npm run test:backend   # Execute BE-01 through BE-05 integration test suite (41 tests)
+npm run lint           # TypeScript type check (tsc --noEmit)
+npm run build          # Production frontend build
 ```
 
 ## Project structure
@@ -29,11 +44,23 @@ npm run test:verify  # execute BE-01 through BE-05 automated test suite
 | Path | Purpose |
 | --- | --- |
 | `backend/` | Express.js REST API service, Firebase Admin SDK integration, authentication middlewares, controllers, and test suite |
-| `src/components/` | Shared UI components (Layout, Navbar, Button, Card, FormField, StatusMessage, PageHeader) |
-| `src/styles/theme.css` | Design tokens (colours, spacing). Update here once `docs/design-system.md` is final |
-| `src/pages/` | Page components. `borrower/` = borrower-facing (M5), owner pages = M6 |
-| `docs/` | Requirements, test plan, design system, API contracts, `BUGS.md` |
-| `evidence/` | Project evidence for the report: `screenshots/`, `interviews/`, `meetings/`, `finance/`, `pm-board/`, backend verification logs |
+| `src/services/` | Strongly-typed API client service (`api.ts`) connecting React UI to the Express backend |
+| `src/context/` | Application state management (`AppContext.tsx`) with real-time backend API synchronization |
+| `src/components/` | Shared UI components (Layout, Navbar, Button, Card, FormField, Modals, StatusBadge) |
+| `src/pages/` | Page components for borrowers, clubs, and admin dashboard |
+| `src/types/` | TypeScript interfaces and type definitions for EventPool |
+| `src/styles/theme.css` | Design tokens, typography, and color palette |
+| `docs/` | Requirements, test strategy, design review, API contracts, `BUGS.md` |
+| `evidence/` | Project evidence for the report: screenshots, interviews, finance, and backend verification logs |
+
+## Frontend & Backend Integration
+
+The React 19 frontend and the Express + Firebase backend are merged and fully integrated:
+
+1. **Vite API Reverse Proxy:** Configured in `vite.config.ts` so that `/api/*` and `/uploads/*` requests from the browser automatically route to `http://localhost:5000` without CORS issues.
+2. **Full-Stack API Service (`src/services/api.ts`):** Complete wrapper implementation for all API contract v1.1 endpoints (Auth, Admin, Clubs, Events, Resources, and Image Upload).
+3. **State Synchronization (`src/context/AppContext.tsx`):** When the backend is online, live clubs, resources, and events are fetched from Firebase and synchronized into the UI. If offline, the application gracefully falls back to local storage.
+4. **Unified NPM Scripts:** Root `package.json` scripts (`dev:backend`, `test:backend`) allow seamless developer workflows.
 
 ## Jira Tasks Assigned & Completed (M7 — Backend Lead)
 
