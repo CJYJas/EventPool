@@ -8,6 +8,7 @@ import {
   History,
   MoreHorizontal,
   Plus,
+  Trash2,
   Upload,
   X,
 } from 'lucide-react';
@@ -51,10 +52,12 @@ export const MyClubPage: React.FC = () => {
     confirmReturnVerification,
     addResource,
     editResourceQuantity,
+    updateResource,
     toggleResourceAvailability,
     archiveResource,
     createEvent,
     updateEvent,
+    deleteEvent,
     updateOwnClubProfile,
   } = useApp();
 
@@ -96,6 +99,10 @@ export const MyClubPage: React.FC = () => {
   const [cancelConfirmReqId, setCancelConfirmReqId] = useState<string | null>(
     null
   );
+  const [rejectConfirmReqId, setRejectConfirmReqId] = useState<string | null>(
+    null
+  );
+  const [rejectRemarks, setRejectRemarks] = useState('');
 
   // Add Resource Form State (Complete form!)
   const [newResName, setNewResName] = useState('');
@@ -114,6 +121,20 @@ export const MyClubPage: React.FC = () => {
   const [newResWeightKg, setNewResWeightKg] = useState<string>('');
   const [newResImage, setNewResImage] = useState<string>('');
   const [addResError, setAddResError] = useState('');
+
+  // Edit Resource Form State
+  const [editResourceModal, setEditResourceModal] = useState<Resource | null>(null);
+  const [editResName, setEditResName] = useState('');
+  const [editResCategory, setEditResCategory] = useState<ResourceCategory>('Decorations');
+  const [editResCondition, setEditResCondition] = useState<'Excellent' | 'Good' | 'Fair'>('Good');
+  const [editResLocation, setEditResLocation] = useState('');
+  const [editResQty, setEditResQty] = useState(1);
+  const [editResDesc, setEditResDesc] = useState('');
+  const [editResRemarks, setEditResRemarks] = useState('');
+  const [editResCostMYR, setEditResCostMYR] = useState<string>('');
+  const [editResWeightKg, setEditResWeightKg] = useState<string>('');
+  const [editResImage, setEditResImage] = useState<string>('');
+  const [editResError, setEditResError] = useState('');
 
   // Event Modal State
   const [eventModalOpen, setEventModalOpen] = useState(false);
@@ -238,7 +259,16 @@ export const MyClubPage: React.FC = () => {
     }
   }, [activeReturnItem?.id, activeReturnItem?.requestedQuantity]);
 
-  if (!club) return null;
+  if (!club) {
+    return (
+      <div className="max-w-xl mx-auto py-20 px-4 text-center space-y-2" role="status">
+        <h2 className="text-xl font-bold text-[#1F3626]">Club workspace not available yet</h2>
+        <p className="text-sm text-[#4A554E]">
+          You are signed in, but no club data is linked to this account yet. Please contact UM Admin.
+        </p>
+      </div>
+    );
+  }
 
   const handleVerifySubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -328,6 +358,71 @@ export const MyClubPage: React.FC = () => {
     });
     setAddSuccessName(newResName.trim());
     resetAddResourceForm();
+  };
+
+  const openEditResource = (r: Resource) => {
+    setEditResourceModal(r);
+    setEditResName(r.name);
+    setEditResCategory(r.category);
+    setEditResCondition(r.condition);
+    setEditResLocation(r.location);
+    setEditResQty(r.totalUnits);
+    setEditResDesc(r.description || '');
+    setEditResRemarks(r.remarks || '');
+    setEditResCostMYR(r.estimatedUnitCostRM ? String(r.estimatedUnitCostRM) : '');
+    setEditResWeightKg(r.estimatedUnitWeightKg ? String(r.estimatedUnitWeightKg) : '');
+    setEditResImage(r.images[0] || '');
+    setEditResError('');
+  };
+
+  const handleEditResourceImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        setEditResImage(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleEditResourceSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editResourceModal) return;
+    setEditResError('');
+    if (!editResName.trim() || !editResDesc.trim() || !editResLocation.trim()) {
+      setEditResError('Please provide resource name, description, and storage location.');
+      return;
+    }
+    const committed = editResourceModal.reservedUnits + editResourceModal.borrowedUnits;
+    if (editResQty < committed) {
+      setEditResError(`Total quantity cannot be less than ${committed} currently reserved or borrowed units.`);
+      return;
+    }
+
+    const parsedCost = editResCostMYR.trim() ? Number(editResCostMYR) : undefined;
+    const parsedWeight = editResWeightKg.trim() ? Number(editResWeightKg) : undefined;
+
+    const res = updateResource(editResourceModal.id, {
+      name: editResName.trim(),
+      category: editResCategory,
+      condition: editResCondition,
+      location: editResLocation.trim(),
+      totalUnits: editResQty,
+      description: editResDesc.trim(),
+      remarks: editResRemarks.trim(),
+      estimatedUnitCostRM: parsedCost,
+      estimatedUnitWeightKg: parsedWeight,
+      imageUrl: editResImage || undefined,
+    });
+
+    if (!res.ok) {
+      setEditResError(res.error || 'Failed to update resource.');
+      return;
+    }
+
+    setEditResourceModal(null);
   };
 
   const openCreateEvent = () => {
@@ -611,7 +706,7 @@ export const MyClubPage: React.FC = () => {
                         key={req.id}
                         request={req}
                         title={`${partner?.acronym} · ${req.requestedQuantity} ${
-                          res?.name.toLowerCase() || 'resource'
+                          res?.name || 'resource'
                         }`}
                         subtitle={`${req.eventName} · ${req.pickupDate} → ${req.expectedReturnDate}`}
                         overdue={overdue}
@@ -625,7 +720,10 @@ export const MyClubPage: React.FC = () => {
                               <>
                                 <button
                                   type="button"
-                                  onClick={() => rejectBorrowRequest(req.id)}
+                                  onClick={() => {
+                                    setRejectRemarks('');
+                                    setRejectConfirmReqId(req.id);
+                                  }}
                                   className="px-3.5 h-8 rounded-full border border-[#D4D1C7] text-xs font-medium text-[#3D4B41] hover:bg-[#FAF8F2] cursor-pointer"
                                 >
                                   Reject
@@ -651,7 +749,17 @@ export const MyClubPage: React.FC = () => {
                             {isOwner && req.status === 'Return Pending' && (
                               <button
                                 type="button"
-                                onClick={() => setSelectedVerifyId(req.id)}
+                                onClick={() => {
+                                  setSelectedVerifyId(req.id);
+                                  const panel = document.getElementById('verify-return-panel');
+                                  if (panel) {
+                                    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                                    panel.classList.add('ring-4', 'ring-[#2D4A35]/40');
+                                    setTimeout(() => {
+                                      panel.classList.remove('ring-4', 'ring-[#2D4A35]/40');
+                                    }, 1500);
+                                  }
+                                }}
                                 className="px-3.5 h-8 rounded-full border border-[#2D4A35] text-xs font-semibold text-[#2D4A35] hover:bg-[#EEF3EC] cursor-pointer"
                               >
                                 Verify Return &rarr;
@@ -701,7 +809,10 @@ export const MyClubPage: React.FC = () => {
             </div>
 
             {/* Verify a return */}
-            <div className="lg:col-span-5 bg-[#DCE7D8] rounded-3xl border border-[#C9DBC4] p-6 space-y-4">
+            <div
+              id="verify-return-panel"
+              className="lg:col-span-5 bg-[#DCE7D8] rounded-3xl border border-[#C9DBC4] p-6 space-y-4 transition-all duration-300"
+            >
               <div className="flex items-start justify-between">
                 <div>
                   <h2 className="text-lg font-bold text-[#1F3626]">
@@ -713,7 +824,7 @@ export const MyClubPage: React.FC = () => {
                       {activeReturnItem.requestedQuantity}{' '}
                       {getResourceById(
                         activeReturnItem.resourceId
-                      )?.name.toLowerCase()}
+                      )?.name || 'resource'}
                     </p>
                   ) : (
                     <p className="text-xs text-[#4A554E] mt-1">
@@ -723,6 +834,37 @@ export const MyClubPage: React.FC = () => {
                 </div>
                 <Box className="w-5 h-5 text-[#2D4A35]" />
               </div>
+
+              {/* Multi-item queue switcher when there are 2 or more pending returns */}
+              {returnsToVerify.length > 1 && (
+                <div className="space-y-1.5 p-3 rounded-2xl bg-white/60 border border-[#C9DBC4]">
+                  <div className="flex items-center justify-between text-[11px] font-semibold text-[#2D4A35]">
+                    <span>Items to verify ({returnsToVerify.length})</span>
+                    <span className="text-[10px] text-[#526356] font-normal">Click item to switch</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {returnsToVerify.map((item, idx) => {
+                      const isSelected = item.id === activeReturnItem?.id;
+                      const res = getResourceById(item.resourceId);
+                      const borrowerClub = getClubById(item.borrowerClubId);
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => setSelectedVerifyId(item.id)}
+                          className={`px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+                            isSelected
+                              ? 'bg-[#2D4A35] text-white shadow-sm ring-2 ring-[#2D4A35]/30'
+                              : 'bg-white hover:bg-[#F4F8F3] text-[#1F3626] border border-[#C9DBC4]'
+                          }`}
+                        >
+                          #{idx + 1} {borrowerClub?.acronym}: {res?.name || 'Resource'} ({item.requestedQuantity})
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               {activeReturnItem && (
                 <form onSubmit={handleVerifySubmit} className="space-y-3">
@@ -836,7 +978,7 @@ export const MyClubPage: React.FC = () => {
                             <td className="py-3 pr-4">
                               <p className="font-semibold text-[#1F3626] tabular-nums">
                                 {req.requestedQuantity}{' '}
-                                {res?.name.toLowerCase()}
+                                {res?.name || 'Resource'}
                               </p>
                               <p className="text-xs text-[#6B766E]">
                                 {isOwner
@@ -996,14 +1138,29 @@ export const MyClubPage: React.FC = () => {
                     )}
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={() => openEditEvent(ev)}
-                    className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-xl border border-[#D4D1C7] text-xs font-semibold text-[#1F3626] hover:bg-white cursor-pointer shrink-0 self-start sm:self-center"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    Edit Event
-                  </button>
+                  <div className="flex items-center gap-2 shrink-0 self-start sm:self-center">
+                    <button
+                      type="button"
+                      onClick={() => openEditEvent(ev)}
+                      className="inline-flex items-center gap-1.5 px-3.5 h-9 rounded-xl border border-[#D4D1C7] text-xs font-semibold text-[#1F3626] hover:bg-white cursor-pointer"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      Edit
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm(`Are you sure you want to delete the event "${ev.name}"?`)) {
+                          deleteEvent(ev.id);
+                        }
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 h-9 rounded-xl border border-rose-200 text-xs font-semibold text-rose-600 hover:bg-rose-50 cursor-pointer"
+                      title="Delete event"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      Delete
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1557,7 +1714,7 @@ export const MyClubPage: React.FC = () => {
                         <p className="text-xs font-bold text-[#1F3626] tabular-nums">
                           {isOwner ? 'Lent to' : 'Borrowed from'}{' '}
                           {partner?.acronym} · {req.requestedQuantity}{' '}
-                          {res?.name.toLowerCase()}
+                          {res?.name || 'Resource'}
                         </p>
                         <p className="text-[11px] text-[#6B766E] font-mono tabular-nums mt-0.5">
                           {req.eventName} · {req.pickupDate} →{' '}
@@ -1717,6 +1874,17 @@ export const MyClubPage: React.FC = () => {
               <button
                 type="button"
                 onClick={() => {
+                  openEditResource(actionResource);
+                  setActionResource(null);
+                }}
+                className="w-full h-10 rounded-xl bg-[#2D4A35] text-white text-xs font-semibold hover:bg-[#233B2A] cursor-pointer flex items-center justify-center gap-1.5"
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                Edit resource details
+              </button>
+              <button
+                type="button"
+                onClick={() => {
                   setEditQtyResource(actionResource);
                   setEditQtyValue(actionResource.totalUnits);
                   setEditQtyError('');
@@ -1724,7 +1892,7 @@ export const MyClubPage: React.FC = () => {
                 }}
                 className="w-full h-10 rounded-xl border border-[#D4D1C7] text-xs font-semibold text-[#1F3626] hover:bg-[#FAF8F2] cursor-pointer"
               >
-                Edit quantity
+                Edit quantity only
               </button>
               <button
                 type="button"
@@ -1747,6 +1915,226 @@ export const MyClubPage: React.FC = () => {
                 Archive resource
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Edit Resource Details Form */}
+      {editResourceModal && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4 overflow-y-auto"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-lg bg-white rounded-3xl border border-[#E5E2D9] p-6 sm:p-7 relative shadow-xl my-8">
+            <button
+              type="button"
+              onClick={() => setEditResourceModal(null)}
+              className="absolute right-5 top-5 w-8 h-8 rounded-full hover:bg-[#F2EFE6] flex items-center justify-center text-[#6B766E] cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+
+            <h2 className="text-xl font-bold text-[#1F3626]">
+              Edit Resource Details
+            </h2>
+            <p className="text-xs text-[#6B766E] mt-1">
+              Update details, availability, and inventory for {editResourceModal.name}.
+            </p>
+
+            {editResError && (
+              <div className="mt-3">
+                <InlineAlert message={editResError} />
+              </div>
+            )}
+
+            <form
+              onSubmit={handleEditResourceSubmit}
+              noValidate
+              className="mt-4 space-y-3.5"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                  Resource Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editResName}
+                  onChange={(e) => setEditResName(e.target.value)}
+                  className="w-full h-10 px-3.5 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626] focus:border-[#2D4A35] focus:outline-none"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                    Category *
+                  </label>
+                  <select
+                    value={editResCategory}
+                    onChange={(e) =>
+                      setEditResCategory(e.target.value as ResourceCategory)
+                    }
+                    className="w-full h-10 px-3 rounded-xl border border-[#D4D1C7] text-sm bg-white text-[#1F3626]"
+                  >
+                    <option value="Decorations">Decorations</option>
+                    <option value="Furniture">Furniture</option>
+                    <option value="Audio Equipment">Audio Equipment</option>
+                    <option value="Lighting">Lighting</option>
+                    <option value="Electronics">Electronics</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                    Condition *
+                  </label>
+                  <select
+                    value={editResCondition}
+                    onChange={(e) =>
+                      setEditResCondition(
+                        e.target.value as 'Excellent' | 'Good' | 'Fair'
+                      )
+                    }
+                    className="w-full h-10 px-3 rounded-xl border border-[#D4D1C7] text-sm bg-white text-[#1F3626]"
+                  >
+                    <option value="Excellent">Excellent</option>
+                    <option value="Good">Good</option>
+                    <option value="Fair">Fair</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                    Total Quantity *
+                  </label>
+                  <input
+                    type="number"
+                    min={editResourceModal.reservedUnits + editResourceModal.borrowedUnits}
+                    required
+                    value={editResQty}
+                    onChange={(e) =>
+                      setEditResQty(Math.max(1, Number(e.target.value) || 1))
+                    }
+                    className="w-full h-10 px-3.5 rounded-xl border border-[#D4D1C7] text-sm font-semibold tabular-nums text-[#1F3626]"
+                  />
+                  <p className="text-[10px] text-[#6B766E] mt-0.5">
+                    Min: {editResourceModal.reservedUnits + editResourceModal.borrowedUnits} (committed)
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                  Pickup / Storage Location *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editResLocation}
+                  onChange={(e) => setEditResLocation(e.target.value)}
+                  className="w-full h-10 px-3.5 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                  Description *
+                </label>
+                <textarea
+                  rows={2}
+                  required
+                  value={editResDesc}
+                  onChange={(e) => setEditResDesc(e.target.value)}
+                  className="w-full p-3 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626]"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                  Handling Remarks
+                </label>
+                <input
+                  type="text"
+                  value={editResRemarks}
+                  onChange={(e) => setEditResRemarks(e.target.value)}
+                  className="w-full h-10 px-3.5 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626]"
+                />
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                    Unit Cost (RM)
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={editResCostMYR}
+                    onChange={(e) => setEditResCostMYR(e.target.value)}
+                    className="w-full h-10 px-3.5 rounded-xl border border-[#D4D1C7] text-sm tabular-nums text-[#1F3626]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                    Unit Weight (kg)
+                  </label>
+                  <input
+                    type="number"
+                    step="0.1"
+                    min={0}
+                    value={editResWeightKg}
+                    onChange={(e) => setEditResWeightKg(e.target.value)}
+                    className="w-full h-10 px-3.5 rounded-xl border border-[#D4D1C7] text-sm tabular-nums text-[#1F3626]"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                  Resource Photo
+                </label>
+                <div className="flex items-center gap-3">
+                  {editResImage ? (
+                    <img
+                      src={editResImage}
+                      alt="Preview"
+                      className="w-14 h-14 rounded-xl object-cover border border-[#D4D1C7]"
+                    />
+                  ) : (
+                    <div className="w-14 h-14 rounded-xl bg-[#F4F1EA] border border-[#D4D1C7] flex items-center justify-center text-[#6B766E]">
+                      <Upload className="w-5 h-5" />
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleEditResourceImageUpload}
+                      className="block w-full text-xs text-[#6B766E] file:mr-3 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-[#EEF3EC] file:text-[#2D4A35] hover:file:bg-[#DFEBDC] cursor-pointer"
+                    />
+                    <p className="text-[10px] text-[#6B766E] mt-1">
+                      PNG, JPG, or WEBP up to 5MB.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-[#EFECE3]">
+                <button
+                  type="button"
+                  onClick={() => setEditResourceModal(null)}
+                  className="px-4 h-10 rounded-xl border border-[#D4D1C7] text-xs font-semibold text-[#1F3626] hover:bg-[#FAF8F2] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 h-10 rounded-xl bg-[#2D4A35] text-white text-xs font-semibold hover:bg-[#233B2A] cursor-pointer"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
@@ -1873,6 +2261,57 @@ export const MyClubPage: React.FC = () => {
                 className="px-5 h-9 rounded-xl bg-[#2D4A35] text-white text-xs font-semibold cursor-pointer"
               >
                 Got it
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reject Borrow Request Modal with Rejection Remarks */}
+      {rejectConfirmReqId && (
+        <div
+          className="fixed inset-0 z-50 bg-black/45 flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="w-full max-w-md bg-white rounded-3xl border border-[#E5E2D9] p-6 sm:p-7 relative shadow-xl space-y-4">
+            <h2 className="text-xl font-bold text-[#1F3626]">
+              Reject Borrowing Request
+            </h2>
+            <p className="text-xs text-[#6B766E]">
+              Provide a reason or rejection remarks for the borrowing club.
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold text-[#1F3626] mb-1">
+                Rejection Remarks / Reason
+              </label>
+              <textarea
+                rows={3}
+                value={rejectRemarks}
+                onChange={(e) => setRejectRemarks(e.target.value)}
+                placeholder="e.g. Resource reserved for internal club event / Maintenance required..."
+                className="w-full p-3 rounded-xl border border-[#D4D1C7] text-sm text-[#1F3626] focus:border-[#8C2220] focus:outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setRejectConfirmReqId(null)}
+                className="px-4 h-10 rounded-xl border border-[#D4D1C7] text-xs font-semibold text-[#3D4B41] hover:bg-[#FAF8F2] cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  rejectBorrowRequest(rejectConfirmReqId, rejectRemarks.trim() || undefined);
+                  setRejectConfirmReqId(null);
+                }}
+                className="px-5 h-10 rounded-xl bg-[#8C2220] hover:bg-[#731A19] text-white text-xs font-semibold cursor-pointer"
+              >
+                Confirm Rejection
               </button>
             </div>
           </div>

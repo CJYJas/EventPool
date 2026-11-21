@@ -87,3 +87,44 @@ export const getEvents = async (req, res) => {
     return sendError(res, 'Failed to retrieve events', 'INTERNAL_ERROR', 500);
   }
 };
+
+/**
+ * PATCH /api/events/:eventId
+ * Updates an existing event (Club only, must be own event)
+ */
+export const updateEvent = async (req, res) => {
+  try {
+    const { eventId } = req.params;
+    const { eventName, eventDate, purpose, description } = req.body;
+
+    const eventRef = db.collection('Events').doc(eventId);
+    const docSnap = await eventRef.get();
+
+    if (!docSnap.exists) {
+      return sendError(res, 'Event not found', 'NOT_FOUND', 404);
+    }
+
+    const eventData = docSnap.data();
+    if (eventData.clubId !== req.user.clubId && req.user.role !== 'admin') {
+      return sendError(res, 'Unauthorized: you can only update events belonging to your club', 'FORBIDDEN', 403);
+    }
+
+    const updates = {};
+    if (eventName) updates.eventName = eventName.trim();
+    if (eventDate) updates.eventDate = eventDate;
+    if (purpose) updates.purpose = purpose.trim();
+    if (description !== undefined) updates.description = description.trim();
+    updates.updatedAt = new Date().toISOString();
+
+    await eventRef.update(updates);
+
+    return sendSuccess(res, 'Event updated successfully', {
+      eventId,
+      ...eventData,
+      ...updates
+    });
+  } catch (err) {
+    console.error('updateEvent error:', err);
+    return sendError(res, 'Failed to update event', 'INTERNAL_ERROR', 500);
+  }
+};

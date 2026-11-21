@@ -19,8 +19,17 @@ export const ResourceCard: React.FC<ResourceCardProps> = ({
 }) => {
   return (
     <div
+      role="button"
+      tabIndex={0}
+      aria-label={`View details for ${resource.name}`}
       onClick={onSelect}
-      className="bg-white rounded-3xl border border-[#E5E2D9] hover:border-[#2D4A35] transition-colors overflow-hidden flex flex-col cursor-pointer group"
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
+      className="bg-white rounded-3xl border border-[#E5E2D9] hover:border-[#2D4A35] transition-colors overflow-hidden flex flex-col cursor-pointer group focus:outline-none focus-visible:ring-2 focus-visible:ring-[#2D4A35]"
     >
       <div className="relative h-44 overflow-hidden">
         <ResourceImage

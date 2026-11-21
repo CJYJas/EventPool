@@ -1,163 +1,231 @@
-import React, { useMemo, useState } from 'react';
-import { ArrowRight, CalendarPlus, MapPin, Plus, ShieldCheck, Users, X } from 'lucide-react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ArrowRight, CalendarPlus, CheckCircle2, MapPin, Plus, ShieldCheck, Users, X } from 'lucide-react';
 import { Card } from '../../components/Card';
 import { FormField, fieldInputClass } from '../../components/FormField';
 import { ResourceImage } from '../../components/ResourceImage';
-import { InlineAlert } from '../../components/StateBlocks';
+import { EmptyState, ErrorRetryState, InlineAlert, LoadingSkeleton } from '../../components/StateBlocks';
 import { StatusBadge } from '../../components/StatusBadge';
 import { getResourceAvailability, useApp } from '../../context/AppContext';
-import { REFERENCE_TODAY } from '../../data/seedData';
+import { useResourceDetail } from '../../hooks/useResourceDetail';
+import {
+  addDaysISO,
+  buildBorrowPayload,
+  createClubEvent,
+  describeBorrowError,
+  fetchClubEvents,
+  getRequestBlocker,
+  submitBorrowingRequest,
+  todayISO,
+  validateBorrowForm,
+  type BorrowFormErrors,
+  type BorrowSubmission,
+} from '../../services/borrowing';
+import type { ClubEvent } from '../../types/eventpool';
 
 export const BorrowFormPage: React.FC = () => {
-  const {
-    selectedResourceId,
-    resources,
-    events,
-    currentUser,
-    navigate,
-    createEvent,
-    submitBorrowRequest,
-    getClubById,
-    getResourceById,
-  } = useApp();
+  const { selectedResourceId, currentUser, navigate } = useApp();
+  const { resource, club: ownerClub, status: loadStatus, error: loadError, reload } =
+    useResourceDetail(selectedResourceId);
 
-  const resource = getResourceById(selectedResourceId) || resources[0];
-  const ownerClub = getClubById(resource?.clubId);
-  const borrowerClubId = currentUser?.clubId || 'club-pekom';
-  const borrowerClub = getClubById(borrowerClubId);
+  const borrowerName = currentUser?.name || 'Your club';
 
-  const clubEvents = useMemo(
-    () => events.filter((ev) => ev.clubId === borrowerClubId),
-    [events, borrowerClubId]
-  );
+  // Events come from GET /api/events (scoped to the signed-in club)
+  const [events, setEvents] = useState<ClubEvent[]>([]);
+  const [eventsStatus, setEventsStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const loadEvents = useCallback(async () => {
+    setEventsStatus('loading');
+    try {
+      setEvents(await fetchClubEvents());
+      setEventsStatus('ready');
+    } catch {
+      setEventsStatus('error');
+    }
+  }, []);
+  useEffect(() => {
+    loadEvents();
+  }, [loadEvents]);
 
-  const [selectedEventId, setSelectedEventId] = useState<string>(
-    clubEvents[0]?.id || ''
-  );
-  const [eventName, setEventName] = useState(clubEvents[0]?.name || '');
-  const [quantity, setQuantity] = useState<number>(
-    Math.min(12, resource?.availableUnits || 1)
-  );
-  const [purpose, setPurpose] = useState(clubEvents[0]?.purpose || '');
-  const [wouldOtherwisePurchase, setWouldOtherwisePurchase] = useState<
-    boolean | null
-  >(null);
+  const [selectedEventId, setSelectedEventId] = useState('');
+  const [quantity, setQuantity] = useState<number>(1);
+  const [purpose, setPurpose] = useState('');
+  const [wouldOtherwisePurchase, setWouldOtherwisePurchase] = useState<boolean | null>(null);
   const [remarks, setRemarks] = useState('');
-  const [pickupDate, setPickupDate] = useState('2026-11-18');
-  const [expectedReturnDate, setExpectedReturnDate] = useState('2026-11-20');
+  const [pickupDate, setPickupDate] = useState(() => addDaysISO(1));
+  const [expectedReturnDate, setExpectedReturnDate] = useState(() => addDaysISO(3));
 
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [fieldErrors, setFieldErrors] = useState<BorrowFormErrors & Record<string, string | undefined>>({});
   const [formError, setFormError] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitted, setSubmitted] = useState<BorrowSubmission | null>(null);
 
-  // Inline create-event modal route
+  // Inline create-event modal
   const [newEventOpen, setNewEventOpen] = useState(false);
   const [newEvtName, setNewEvtName] = useState('');
-  const [newEvtDate, setNewEvtDate] = useState('2026-11-25');
+  const [newEvtDate, setNewEvtDate] = useState(() => addDaysISO(7));
   const [newEvtPurpose, setNewEvtPurpose] = useState('');
   const [newEvtDesc, setNewEvtDesc] = useState('');
   const [newEvtError, setNewEvtError] = useState('');
+  const [creatingEvent, setCreatingEvent] = useState(false);
+
+  const backToResource = () =>
+    selectedResourceId
+      ? navigate('resource_detail', { resourceId: selectedResourceId })
+      : navigate('marketplace');
+
+  if (loadStatus === 'not_found') {
+    return (
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-12">
+        <EmptyState
+          title="Resource not found"
+          description="This resource may have been removed or archived by its owner club."
+          actionLabel="Browse Marketplace"
+          onAction={() => navigate('marketplace')}
+        />
+      </div>
+    );
+  }
 
   if (!resource) {
     return (
       <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-12">
-        <p className="text-sm text-[#4A554E]">Resource not found.</p>
+        {loadStatus === 'error' ? (
+          <ErrorRetryState message={loadError} onRetry={reload} />
+        ) : (
+          <LoadingSkeleton rows={4} />
+        )}
       </div>
     );
   }
 
   const availability = getResourceAvailability(resource, ownerClub);
+  const blocker = getRequestBlocker(resource, ownerClub, currentUser, availability);
+  const ownerName = ownerClub?.name || 'the owner club';
+  const selectedEvent = events.find((ev) => ev.id === selectedEventId);
+
+  if (blocker) {
+    return (
+      <div className="max-w-[1280px] mx-auto px-4 sm:px-6 py-12">
+        <EmptyState
+          title="This resource cannot be requested"
+          description={blocker}
+          actionLabel="Back to resource"
+          onAction={backToResource}
+        />
+      </div>
+    );
+  }
+
+  if (submitted) {
+    return (
+      <div className="max-w-xl mx-auto px-4 sm:px-6 py-16">
+        <div className="bg-white rounded-3xl border border-[#E5E2D9] p-8 text-center space-y-4" role="status">
+          <div className="w-14 h-14 rounded-full bg-[#EEF3EC] text-[#2D4A35] flex items-center justify-center mx-auto">
+            <CheckCircle2 className="w-8 h-8" />
+          </div>
+          <h1 className="text-2xl font-bold text-[#1F3626]">Request submitted</h1>
+          <div className="flex items-center justify-center gap-2 text-sm text-[#4A554E]">
+            Status: <StatusBadge status={submitted.status as 'Pending'} />
+          </div>
+          <p className="text-sm text-[#4A554E] leading-relaxed">
+            Your request for {quantity} x {resource.name} has been sent to {ownerName}. Stock is only
+            reserved once they approve it, so wait for approval before collecting.
+          </p>
+          {submitted.requestId && (
+            <p className="text-xs text-[#6B766E] font-mono">Reference: {submitted.requestId}</p>
+          )}
+          <div className="flex flex-wrap justify-center gap-3 pt-2">
+            <button
+              type="button"
+              onClick={() => navigate('marketplace')}
+              className="px-5 h-10 rounded-xl border border-[#D4D1C7] text-sm font-medium text-[#3D4B41] hover:bg-[#FAF8F2] cursor-pointer"
+            >
+              Back to Marketplace
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate('my_club')}
+              className="px-5 h-10 rounded-xl bg-[#2D4A35] hover:bg-[#233B2A] text-white text-sm font-semibold cursor-pointer"
+            >
+              Go to My Club
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const clearError = (key: string) => setFieldErrors((p) => ({ ...p, [key]: undefined }));
 
   const handleSelectExistingEvent = (evtId: string) => {
     setSelectedEventId(evtId);
-    const found = clubEvents.find((e) => e.id === evtId);
-    if (found) {
-      setEventName(found.name);
+    clearError('eventId');
+    const found = events.find((e) => e.id === evtId);
+    if (found && !purpose.trim()) {
       setPurpose(found.purpose);
-      setFieldErrors((prev) => ({ ...prev, eventName: '', purpose: '' }));
+      clearError('purpose');
     }
   };
 
-  const handleCreateInlineEvent = (e: React.FormEvent) => {
+  const handleCreateInlineEvent = async (e: React.FormEvent) => {
     e.preventDefault();
     setNewEvtError('');
     if (!newEvtName.trim() || !newEvtDate || !newEvtPurpose.trim()) {
       setNewEvtError('Event name, date, and purpose are required.');
       return;
     }
-    const created = createEvent({
-      clubId: borrowerClubId,
-      name: newEvtName,
-      date: newEvtDate,
-      purpose: newEvtPurpose,
-      description: newEvtDesc,
-    });
-    setSelectedEventId(created.id);
-    setEventName(created.name);
-    setPurpose(created.purpose);
-    setNewEvtName('');
-    setNewEvtPurpose('');
-    setNewEvtDesc('');
-    setNewEventOpen(false);
+    setCreatingEvent(true);
+    try {
+      const created = await createClubEvent({
+        name: newEvtName,
+        date: newEvtDate,
+        purpose: newEvtPurpose,
+        description: newEvtDesc,
+      });
+      setEvents((prev) => [...prev, created].sort((a, b) => a.date.localeCompare(b.date)));
+      setSelectedEventId(created.id);
+      clearError('eventId');
+      if (!purpose.trim()) setPurpose(created.purpose);
+      setNewEvtName('');
+      setNewEvtPurpose('');
+      setNewEvtDesc('');
+      setNewEventOpen(false);
+    } catch (err) {
+      setNewEvtError(describeBorrowError(err).replace('submit your request', 'create the event'));
+    } finally {
+      setCreatingEvent(false);
+    }
   };
 
-  const validate = (): boolean => {
-    const errs: Record<string, string> = {};
-    if (!eventName.trim()) {
-      errs.eventName = 'Please select an existing event or enter an event name.';
-    }
-    if (
-      !Number.isFinite(quantity) ||
-      quantity < 1 ||
-      quantity > resource.availableUnits
-    ) {
-      errs.quantity = `Enter a quantity between 1 and ${resource.availableUnits}.`;
-    }
-    if (!purpose.trim()) {
-      errs.purpose = 'Please describe how the borrowed equipment will be used.';
-    }
-    if (wouldOtherwisePurchase === null) {
-      errs.purchase =
-        'Please indicate whether your club would otherwise purchase this item.';
-    }
-    if (!pickupDate) {
-      errs.pickupDate = 'Pickup date is required.';
-    } else if (pickupDate < REFERENCE_TODAY) {
-      errs.pickupDate = `Pickup date cannot be earlier than ${REFERENCE_TODAY}.`;
-    }
-    if (!expectedReturnDate) {
-      errs.expectedReturnDate = 'Expected return date is required.';
-    } else if (pickupDate && expectedReturnDate <= pickupDate) {
-      errs.expectedReturnDate = 'Expected return date must be after the pickup date.';
-    }
-
-    setFieldErrors(errs);
-    return Object.keys(errs).length === 0;
-  };
-
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (submitting) return;
     setFormError('');
-    if (!validate()) {
+
+    const values = {
+      eventId: selectedEventId,
+      quantity,
+      purpose,
+      wouldHavePurchased: wouldOtherwisePurchase,
+      pickupDate,
+      expectedReturnDate,
+    };
+    const errors = validateBorrowForm(values, resource.availableUnits, todayISO());
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) {
       setFormError('Please fix the highlighted fields before submitting.');
       return;
     }
 
-    const result = submitBorrowRequest({
-      resourceId: resource.id,
-      eventId: selectedEventId || undefined,
-      eventName,
-      requestedQuantity: quantity,
-      purpose,
-      wouldOtherwisePurchase: Boolean(wouldOtherwisePurchase),
-      remarks,
-      pickupDate,
-      expectedReturnDate,
-    });
-    if (!result.ok) {
-      setFormError(result.error || 'Could not submit request.');
-      return;
+    setSubmitting(true);
+    try {
+      setSubmitted(await submitBorrowingRequest(buildBorrowPayload(resource.id, values, remarks)));
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (err) {
+      setFormError(describeBorrowError(err));
+      reload(); // stock may have changed - refresh the resource
+    } finally {
+      setSubmitting(false);
     }
-    navigate('my_club');
   };
 
   return (
@@ -197,7 +265,7 @@ export const BorrowFormPage: React.FC = () => {
                   Requesting on behalf of
                 </p>
                 <p className="text-sm font-bold text-[#1F3626]">
-                  {borrowerClub?.acronym} · Universiti Malaya
+                  {borrowerName} · Universiti Malaya
                 </p>
               </div>
             </div>
@@ -227,41 +295,53 @@ export const BorrowFormPage: React.FC = () => {
             <select
               value={selectedEventId}
               onChange={(e) => handleSelectExistingEvent(e.target.value)}
-              className="w-full h-10 px-3.5 rounded-xl bg-white border border-[#D4D1C7] text-sm text-[#1F3626] focus:border-[#2D4A35] focus:outline-none"
+              disabled={eventsStatus === 'loading'}
+              aria-label="Club event"
+              aria-invalid={fieldErrors.eventId ? true : undefined}
+              className={`w-full h-10 px-3.5 rounded-xl bg-white border text-sm text-[#1F3626] focus:outline-none ${
+                fieldErrors.eventId ? 'border-[#8C2220]' : 'border-[#D4D1C7] focus:border-[#2D4A35]'
+              }`}
             >
-              <option value="">Choose from {borrowerClub?.acronym} events...</option>
-              {clubEvents.map((ev) => (
+              <option value="">
+                {eventsStatus === 'loading' ? 'Loading events...' : 'Choose from your club events...'}
+              </option>
+              {events.map((ev) => (
                 <option key={ev.id} value={ev.id}>
                   {ev.name} ({ev.date})
                 </option>
               ))}
             </select>
+            {eventsStatus === 'error' && (
+              <p className="text-[11px] font-medium text-[#8C2220]">
+                Could not load your events.{' '}
+                <button type="button" onClick={loadEvents} className="underline cursor-pointer">
+                  Retry
+                </button>
+              </p>
+            )}
+            {eventsStatus === 'ready' && events.length === 0 && (
+              <p className="text-[11px] text-[#6B766E]">
+                Your club has no events yet. Use "Create new event" to add one.
+              </p>
+            )}
+            {fieldErrors.eventId && (
+              <p className="text-[11px] font-medium text-[#8C2220]">{fieldErrors.eventId}</p>
+            )}
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="sm:col-span-2">
-              <label className="block text-xs font-semibold text-[#1F3626] mb-1.5">
-                Event name *
-              </label>
-              <input
-                type="text"
-                value={eventName}
-                onChange={(e) => {
-                  setEventName(e.target.value);
-                  setFieldErrors((p) => ({ ...p, eventName: '' }));
-                }}
-                placeholder="e.g. UM Tech Hackathon 2026"
-                className={`w-full h-11 px-3.5 rounded-xl border text-sm text-[#1F3626] focus:outline-none ${
-                  fieldErrors.eventName
-                    ? 'border-[#8C2220] bg-[#FDF2F2]/40'
-                    : 'border-[#D4D1C7] focus:border-[#2D4A35]'
-                }`}
-              />
-              {fieldErrors.eventName && (
-                <p className="text-[11px] font-medium text-[#8C2220] mt-1">
-                  {fieldErrors.eventName}
-                </p>
-              )}
+              <p className="block text-xs font-semibold text-[#1F3626] mb-1.5">Selected event</p>
+              <div className="w-full min-h-11 px-3.5 py-2.5 rounded-xl border border-[#EFECE3] bg-[#FAF8F2] text-sm text-[#1F3626]">
+                {selectedEvent ? (
+                  <span>
+                    {selectedEvent.name}{' '}
+                    <span className="text-[#6B766E] font-mono text-xs">({selectedEvent.date})</span>
+                  </span>
+                ) : (
+                  <span className="text-[#6B766E]">No event selected</span>
+                )}
+              </div>
             </div>
 
             <div>
@@ -272,10 +352,10 @@ export const BorrowFormPage: React.FC = () => {
                 type="number"
                 min={1}
                 max={Math.max(1, resource.availableUnits)}
-                value={quantity}
+                value={Number.isNaN(quantity) ? '' : quantity}
                 onChange={(e) => {
-                  setQuantity(Number(e.target.value) || 0);
-                  setFieldErrors((p) => ({ ...p, quantity: '' }));
+                  setQuantity(e.target.value === '' ? Number.NaN : Number(e.target.value));
+                  clearError('quantity');
                 }}
                 className={`w-full h-11 px-3.5 rounded-xl border text-sm font-semibold text-[#1F3626] tabular-nums focus:outline-none ${
                   fieldErrors.quantity
@@ -305,7 +385,7 @@ export const BorrowFormPage: React.FC = () => {
               value={purpose}
               onChange={(e) => {
                 setPurpose(e.target.value);
-                setFieldErrors((p) => ({ ...p, purpose: '' }));
+                clearError('purpose');
               }}
               placeholder="Explain how this equipment will be used and handled during your event..."
               className={`w-full p-3.5 rounded-xl border text-sm text-[#1F3626] focus:outline-none ${
@@ -340,7 +420,7 @@ export const BorrowFormPage: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setWouldOtherwisePurchase(true);
-                  setFieldErrors((p) => ({ ...p, purchase: '' }));
+                  clearError('purchase');
                 }}
                 className={`px-5 h-9 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
                   wouldOtherwisePurchase === true
@@ -354,7 +434,7 @@ export const BorrowFormPage: React.FC = () => {
                 type="button"
                 onClick={() => {
                   setWouldOtherwisePurchase(false);
-                  setFieldErrors((p) => ({ ...p, purchase: '' }));
+                  clearError('purchase');
                 }}
                 className={`px-5 h-9 rounded-xl text-xs font-semibold border transition-colors cursor-pointer ${
                   wouldOtherwisePurchase === false
@@ -379,10 +459,11 @@ export const BorrowFormPage: React.FC = () => {
               </label>
               <input
                 type="date"
+                min={todayISO()}
                 value={pickupDate}
                 onChange={(e) => {
                   setPickupDate(e.target.value);
-                  setFieldErrors((p) => ({ ...p, pickupDate: '' }));
+                  clearError('pickupDate');
                 }}
                 className={`w-full h-11 px-3.5 rounded-xl border text-sm font-mono text-[#1F3626] tabular-nums focus:outline-none ${
                   fieldErrors.pickupDate
@@ -407,10 +488,11 @@ export const BorrowFormPage: React.FC = () => {
               </label>
               <input
                 type="date"
+                min={pickupDate || todayISO()}
                 value={expectedReturnDate}
                 onChange={(e) => {
                   setExpectedReturnDate(e.target.value);
-                  setFieldErrors((p) => ({ ...p, expectedReturnDate: '' }));
+                  clearError('expectedReturnDate');
                 }}
                 className={`w-full h-11 px-3.5 rounded-xl border text-sm font-mono text-[#1F3626] tabular-nums focus:outline-none ${
                   fieldErrors.expectedReturnDate
@@ -453,19 +535,18 @@ export const BorrowFormPage: React.FC = () => {
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={() =>
-                  navigate('resource_detail', { resourceId: resource.id })
-                }
+                onClick={backToResource}
                 className="px-5 h-10 rounded-xl border border-[#D4D1C7] text-sm font-medium text-[#3D4B41] hover:bg-[#FAF8F2] cursor-pointer"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="inline-flex items-center gap-2 px-6 h-10 rounded-xl bg-[#2D4A35] hover:bg-[#233B2A] text-white text-sm font-semibold cursor-pointer"
+                disabled={submitting}
+                className="inline-flex items-center gap-2 px-6 h-10 rounded-xl bg-[#2D4A35] hover:bg-[#233B2A] disabled:bg-[#9BA89E] disabled:cursor-not-allowed text-white text-sm font-semibold cursor-pointer"
               >
                 <ArrowRight className="w-4 h-4" />
-                Submit Request
+                {submitting ? 'Submitting...' : 'Submit Request'}
               </button>
             </div>
           </div>
@@ -489,7 +570,7 @@ export const BorrowFormPage: React.FC = () => {
                 <StatusBadge status={availability} />
               </div>
               <p className="text-xs text-[#6B766E]">
-                Owned by {ownerClub?.acronym} · {resource.category}
+                Owned by {ownerClub?.name || 'UM Club'} · {resource.category}
               </p>
               <p className="text-xs text-[#4A554E] tabular-nums">
                 Condition: {resource.condition} · {resource.availableUnits}{' '}
@@ -510,7 +591,7 @@ export const BorrowFormPage: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-[#6B766E]">Quantity</span>
                 <span className="font-semibold text-[#1F3626] tabular-nums">
-                  {quantity} {resource.name.toLowerCase()}
+                  {Number.isNaN(quantity) ? 0 : quantity} {resource.name}
                 </span>
               </div>
               <div className="flex items-center justify-between">
@@ -531,9 +612,7 @@ export const BorrowFormPage: React.FC = () => {
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[#6B766E]">Borrower</span>
-                <span className="font-semibold text-[#1F3626]">
-                  {borrowerClub?.acronym}
-                </span>
+                <span className="font-semibold text-[#1F3626]">{borrowerName}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-[#6B766E]">Status after submission</span>
@@ -542,7 +621,7 @@ export const BorrowFormPage: React.FC = () => {
             </div>
             <p className="text-[11px] text-[#6B766E] pt-2 border-t border-[#EFECE3] leading-relaxed">
               Submitting creates a Pending request. Stock is only reserved once{' '}
-              {ownerClub?.acronym} approves. Please wait for approval before
+              {ownerName} approves. Please wait for approval before
               collecting.
             </p>
           </Card>
@@ -573,7 +652,7 @@ export const BorrowFormPage: React.FC = () => {
                   Create Club Event
                 </h2>
                 <p className="text-xs text-[#6B766E]">
-                  Added to {borrowerClub?.acronym} Events and linked to this request
+                  Added to your club events and linked to this request
                 </p>
               </div>
             </div>
@@ -604,6 +683,7 @@ export const BorrowFormPage: React.FC = () => {
                 <input
                   type="date"
                   required
+                  min={todayISO()}
                   value={newEvtDate}
                   onChange={(e) => setNewEvtDate(e.target.value)}
                   className="w-full h-10 px-3.5 rounded-xl border border-[#D4D1C7] text-sm font-mono text-[#1F3626]"
@@ -645,9 +725,10 @@ export const BorrowFormPage: React.FC = () => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 h-9 rounded-xl bg-[#2D4A35] text-white text-xs font-semibold cursor-pointer"
+                  disabled={creatingEvent}
+                  className="px-5 h-9 rounded-xl bg-[#2D4A35] disabled:bg-[#9BA89E] text-white text-xs font-semibold cursor-pointer"
                 >
-                  Create &amp; Select
+                  {creatingEvent ? 'Creating...' : 'Create & Select'}
                 </button>
               </div>
             </form>

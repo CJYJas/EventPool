@@ -109,6 +109,7 @@ export interface BorrowRequest {
   updatedAt: string;
   returnedDate?: string;
   verification?: ReturnVerification;
+  rejectionReason?: string;
 }
 
 export interface ClubAccessRequest {

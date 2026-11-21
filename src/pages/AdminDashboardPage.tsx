@@ -6,16 +6,17 @@ import {
   Plus,
   Power,
   RotateCcw,
+  ShieldAlert,
   Users,
   X,
 } from 'lucide-react';
 import { Button } from '../components/Button';
 import {
-  CreateClubModal,
   DeactivateClubModal,
   EditClubModal,
 } from '../components/ClubAdminModals';
 import { ClubLogo } from '../components/ClubLogo';
+import { CreateClubAccountModal } from '../components/CreateClubAccountModal';
 import { PageHeader } from '../components/PageHeader';
 import { StatusBadge } from '../components/StatusBadge';
 import { useApp } from '../context/AppContext';
@@ -23,16 +24,35 @@ import type { Club } from '../types/eventpool';
 
 export const AdminDashboardPage: React.FC = () => {
   const {
+    currentUser,
     clubs,
     resources,
     requests,
     accessRequests,
     navigate,
+    showToast,
     reactivateClub,
     processAccessRequest,
     getClubById,
     getResourceById,
   } = useApp();
+
+  if (currentUser?.role !== 'admin') {
+    return (
+      <div className="max-w-xl mx-auto py-20 px-4 text-center space-y-4">
+        <div className="w-16 h-16 rounded-3xl bg-rose-50 border border-rose-200 text-rose-700 flex items-center justify-center mx-auto shadow-sm">
+          <ShieldAlert className="w-8 h-8" />
+        </div>
+        <h2 className="text-2xl font-bold text-[#1F3626]">Access Restricted</h2>
+        <p className="text-sm text-[#4A554E] leading-relaxed">
+          The Admin Dashboard is strictly reserved for Universiti Malaya System Administrators. Club accounts cannot access this portal.
+        </p>
+        <div className="pt-3">
+          <Button onClick={() => navigate('home')}>Return to Home</Button>
+        </div>
+      </div>
+    );
+  }
 
   const [requestFilter, setRequestFilter] = useState<
     'All' | 'Pending' | 'Active' | 'Completed'
@@ -462,7 +482,15 @@ export const AdminDashboardPage: React.FC = () => {
       </div>
 
       {/* Admin Club Modals */}
-      <CreateClubModal open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateClubAccountModal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onCreated={(club) => {
+          setCreateOpen(false);
+          showToast(`${club.clubName} was created.`);
+          navigate('clubs');
+        }}
+      />
       <EditClubModal club={editingClub} onClose={() => setEditingClub(null)} />
       <DeactivateClubModal
         club={deactivatingClub}
