@@ -1,4 +1,5 @@
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { api } from '../services/api';
 import {
   INITIAL_ACCESS_REQUESTS,
   INITIAL_CLUBS,
@@ -276,6 +277,104 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       // Ignore storage quota errors
     }
   }, [state]);
+
+  // Synchronize with backend API when backend is running
+  useEffect(() => {
+    let active = true;
+    async function syncWithBackend() {
+      try {
+        const health = await api.health();
+        if (health.success && active) {
+          console.log('[EventPool] Connected to Backend API:', health.message);
+          const [clubsRes, resourcesRes, eventsRes] = await Promise.all([
+            api.clubs.getAll(),
+            api.resources.getAll({ limit: 100 }),
+            api.events.getAll(),
+          ]);
+
+          if (!active) return;
+
+          setState((prev) => {
+            let updatedClubs = [...prev.clubs];
+            if (clubsRes.success && Array.isArray(clubsRes.data) && clubsRes.data.length > 0) {
+              const apiClubs: Club[] = clubsRes.data.map((c: any) => ({
+                id: c.clubId,
+                name: c.clubName,
+                acronym: c.clubName.split(' ').map((w: string) => w[0]).join('').slice(0, 5).toUpperCase(),
+                categoryFocus: 'Student Activity',
+                description: c.description || '',
+                storageLocation: 'UM Campus',
+                contactEmail: c.contactEmail,
+                picPhone: c.picContactNum || '',
+                representativeName: c.clubName + ' Rep',
+                representativeEmail: c.contactEmail,
+                password: '',
+                status: c.isActive === false ? 'Inactive' : 'Active',
+                createdAt: c.createdAt || new Date().toISOString(),
+              }));
+              const apiClubIds = new Set(apiClubs.map((c) => c.id));
+              updatedClubs = [...apiClubs, ...prev.clubs.filter((c) => !apiClubIds.has(c.id))];
+            }
+
+            let updatedResources = [...prev.resources];
+            if (resourcesRes.success && resourcesRes.data?.items && resourcesRes.data.items.length > 0) {
+              const apiResources: Resource[] = resourcesRes.data.items.map((r: any) => ({
+                id: r.resourceId,
+                clubId: r.clubId,
+                name: r.itemName,
+                category: (r.category || 'Electronics') as ResourceCategory,
+                totalUnits: r.totalQuantity,
+                availableUnits: r.availableQuantity,
+                reservedUnits: r.reservedQuantity || 0,
+                borrowedUnits: r.borrowedQuantity || 0,
+                condition: (r.condition || 'Good') as any,
+                location: r.location || '',
+                description: r.description || '',
+                remarks: r.remarks || '',
+                images: r.imageURL ? [r.imageURL] : [],
+                archived: r.isArchived || false,
+                manualUnavailable: r.isTemporarilyUnavailable || false,
+                estimatedUnitCostRM: r.estimatedUnitCost,
+                estimatedUnitWeightKg: r.estimatedUnitWeight,
+                createdAt: r.createdAt || new Date().toISOString(),
+              }));
+              const apiResIds = new Set(apiResources.map((r) => r.id));
+              updatedResources = [...apiResources, ...prev.resources.filter((r) => !apiResIds.has(r.id))];
+            }
+
+            let updatedEvents = [...prev.events];
+            if (eventsRes.success && Array.isArray(eventsRes.data) && eventsRes.data.length > 0) {
+              const apiEvents: ClubEvent[] = eventsRes.data.map((e: any) => ({
+                id: e.eventId,
+                clubId: e.clubId,
+                name: e.eventName,
+                date: e.eventDate,
+                purpose: e.purpose,
+                description: e.description,
+                createdAt: e.createdAt,
+              }));
+              const apiEventIds = new Set(apiEvents.map((e) => e.id));
+              updatedEvents = [...apiEvents, ...prev.events.filter((e) => !apiEventIds.has(e.id))];
+            }
+
+            return {
+              ...prev,
+              clubs: updatedClubs,
+              resources: updatedResources,
+              events: updatedEvents,
+            };
+          });
+        }
+      } catch {
+        // Fallback silently to local state when backend is offline
+      }
+    }
+
+    syncWithBackend();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!toastMessage) return;
