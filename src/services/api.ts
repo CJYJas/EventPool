@@ -5,6 +5,155 @@
 
 const API_BASE = '/api';
 
+const AUTH_TOKEN_KEY = 'eventpool_jwt_token';
+const FIREBASE_WEB_API_KEY = import.meta.env?.VITE_FIREBASE_WEB_API_KEY || '';
+
+export type UnauthorizedReason = 'expired' | 'disabled';
+type UnauthorizedHandler = (reason: UnauthorizedReason) => void;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
+interface ApiErrorResponse {
+  success?: boolean;
+  message?: string;
+  error?: { code?: string };
+}
+
+export async function apiRequest<T = unknown>(
+  endpoint: string,
+  options: RequestInit = {}
+): Promise<T> {
+  const url = endpoint.startsWith('/api/')
+    ? endpoint
+    : `${API_BASE}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+  const headers = new Headers(options.headers);
+
+  const token = getAuthToken();
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, { ...options, headers });
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Cannot reach the EventPool server.');
+  }
+
+  let body: ApiResponse<T> | ApiErrorResponse | null = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+
+  if (!response.ok || body?.success === false) {
+    const errorBody = body as ApiErrorResponse | null;
+    const code = errorBody?.error?.code || `HTTP_${response.status}`;
+    const message = errorBody?.message || response.statusText || 'API request failed.';
+
+    if (response.status === 401 || code === 'UNAUTHORIZED') {
+      clearAuthToken();
+      unauthorizedHandler?.('expired');
+    } else if (code === 'ACCOUNT_DISABLED') {
+      clearAuthToken();
+      unauthorizedHandler?.('disabled');
+    }
+
+    throw new ApiError(response.status, code, message);
+  }
+
+  const successBody = body as ApiResponse<T> | null;
+  if (successBody && 'data' in successBody) {
+    return successBody.data as T;
+  }
+  return successBody as unknown as T;
+}
+
+export function getAuthToken(): string | null {
+  return localStorage.getItem(AUTH_TOKEN_KEY);
+}
+
+export function setAuthToken(token: string | null): void {
+  if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+  else localStorage.removeItem(AUTH_TOKEN_KEY);
+}
+
+export function clearAuthToken(): void {
+  setAuthToken(null);
+}
+
+export type AuthProfile =
+  | {
+      accountType: 'admin';
+      adminId: string;
+      adminName: string;
+      email: string;
+    }
+  | {
+      accountType: 'club';
+      clubId: string;
+      clubName: string;
+      email: string;
+    };
+
+export async function loginWithFirebaseAuth(email: string, password: string): Promise<void> {
+  if (!FIREBASE_WEB_API_KEY) {
+    throw new ApiError(
+      0,
+      'FIREBASE_CONFIG_MISSING',
+      'Firebase web API key is not configured. Set VITE_FIREBASE_WEB_API_KEY.'
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      }
+    );
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Cannot reach the sign-in service.');
+  }
+
+  const body = await response.json().catch(() => null) as
+    | { idToken?: string; error?: { message?: string } }
+    | null;
+
+  if (!response.ok || !body?.idToken) {
+    const code = body?.error?.message || `HTTP_${response.status}`;
+    throw new ApiError(response.status, code, 'Firebase authentication failed.');
+  }
+
+  setAuthToken(body.idToken);
+}
+
+export async function fetchAuthProfileApi(): Promise<AuthProfile> {
+  return apiRequest<AuthProfile>('/api/auth/profile');
+}
+
 export interface ApiResponse<T = any> {
   success: boolean;
   message: string;
