@@ -422,13 +422,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     let cancelled = false;
     restoreSession().then((user) => {
       if (cancelled) return;
-      if (user) setCurrentUser(user);
+      if (user) {
+        setCurrentUser(user);
+        refreshBackendData();
+      }
       setAuthReady(true);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshBackendData]);
 
   // Any API call rejected as expired/disabled signs the user out.
   useEffect(() => {
@@ -467,6 +470,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setCurrentUser(user);
       setCurrentView(homeViewFor(user));
       showToast(`Signed in as ${user.name}.`);
+      await refreshBackendData();
       return { ok: true };
     } catch (err) {
       const failure = describeAuthError(err);
@@ -776,10 +780,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (res.message || res.error) {
         const errMsg = res.message || 'Failed to approve request.';
         showToast(errMsg);
+        await refreshBackendData();
         return { ok: false, error: errMsg };
       }
-    } catch {
-      // Local fallback for offline mode
+    } catch (err: any) {
+      await refreshBackendData();
+      const errMsg = err?.message || 'Conflict: Unable to approve borrowing request (409).';
+      showToast(errMsg);
+      return { ok: false, error: errMsg };
     }
 
     const req = state.requests.find((r) => r.id === requestId);
