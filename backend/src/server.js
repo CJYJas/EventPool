@@ -50,18 +50,18 @@ app.use('/api/borrowing-requests', borrowingRequestRoutes);
 // Dev / Demo reset endpoint to reset Firestore to initial testing state
 app.post('/api/dev/reset-demo', async (req, res) => {
   try {
-    // 1. Reset Resources
+    // 1. Reset Resources to initial quantities
     await db.collection('Resources').doc('res-pekom-speaker').set({
       resourceId: 'res-pekom-speaker',
       clubId: 'club-pekom',
       itemName: 'Portable Speakers',
-      category: 'Audio & Visual',
+      category: 'Audio Equipment',
       totalQuantity: 4,
       availableQuantity: 2,
-      reservedQuantity: 2,
-      borrowedQuantity: 0,
-      condition: 'Good',
-      location: 'Block A, Storeroom 2',
+      reservedQuantity: 0,
+      borrowedQuantity: 2,
+      condition: 'Excellent',
+      location: 'PEKOM Storeroom · Block A, FSKTM',
       description: 'Pair of wireless PA speakers with stands.',
       estimatedUnitCost: 450,
       estimatedUnitWeight: 5.5,
@@ -77,11 +77,11 @@ app.post('/api/dev/reset-demo', async (req, res) => {
       itemName: 'Display Easels',
       category: 'Exhibition & Display',
       totalQuantity: 6,
-      availableQuantity: 4,
+      availableQuantity: 6,
       reservedQuantity: 0,
-      borrowedQuantity: 2,
+      borrowedQuantity: 0,
       condition: 'Good',
-      location: 'Block A, Storeroom 2',
+      location: 'PEKOM Storeroom · Block A, FSKTM',
       description: 'Adjustable wooden display easels for posters.',
       estimatedUnitCost: 65,
       estimatedUnitWeight: 1.8,
@@ -91,7 +91,47 @@ app.post('/api/dev/reset-demo', async (req, res) => {
       updatedAt: new Date().toISOString(),
     }, { merge: true });
 
-    // 2. Reset Borrowing Requests
+    await db.collection('Resources').doc('res-pekom-lights').set({
+      resourceId: 'res-pekom-lights',
+      clubId: 'club-pekom',
+      itemName: 'Event String Lights',
+      category: 'Lighting',
+      totalQuantity: 10,
+      availableQuantity: 0,
+      reservedQuantity: 0,
+      borrowedQuantity: 10,
+      condition: 'Good',
+      location: 'PEKOM Storeroom · Block A, FSKTM',
+      description: 'Warm white outdoor string lights.',
+      estimatedUnitCost: 35,
+      estimatedUnitWeight: 0.8,
+      isArchived: false,
+      isTemporarilyUnavailable: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    await db.collection('Resources').doc('res-pekom-projector').set({
+      resourceId: 'res-pekom-projector',
+      clubId: 'club-pekom',
+      itemName: 'HD Multimedia Projector',
+      category: 'Audio & Visual',
+      totalQuantity: 1,
+      availableQuantity: 0,
+      reservedQuantity: 0,
+      borrowedQuantity: 1,
+      condition: 'Good',
+      location: 'PEKOM Storeroom · Block A, FSKTM',
+      description: '1080p 3600-lumen projector.',
+      estimatedUnitCost: 1200,
+      estimatedUnitWeight: 2.9,
+      isArchived: false,
+      isTemporarilyUnavailable: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }, { merge: true });
+
+    // 2. Reset Borrowing Requests to initial pending/return states
     await db.collection('BorrowingRequests').doc('req-101').set({
       requestId: 'req-101',
       resourceId: 'res-pekom-speaker',
@@ -99,12 +139,13 @@ app.post('/api/dev/reset-demo', async (req, res) => {
       requesterClubId: 'PTUM',
       quantity: 2,
       purpose: 'Culture Night 2026',
-      pickupDate: '2026-11-25',
-      expectedReturnDate: '2026-11-27',
-      status: 'Approved',
+      pickupDate: '2026-11-21',
+      expectedReturnDate: '2026-11-23',
+      status: 'Pending',
       wouldHavePurchased: true,
-      createdAt: '2026-11-20T10:00:00.000Z',
-      updatedAt: '2026-11-21T10:00:00.000Z',
+      remarks: 'Will pick up after 2pm lecture.',
+      createdAt: '2026-11-12T10:00:00.000Z',
+      updatedAt: '2026-11-12T10:00:00.000Z',
     });
 
     await db.collection('BorrowingRequests').doc('req-102').set({
@@ -118,25 +159,45 @@ app.post('/api/dev/reset-demo', async (req, res) => {
       expectedReturnDate: '2026-11-25',
       status: 'Pending',
       wouldHavePurchased: true,
-      createdAt: '2026-11-22T10:00:00.000Z',
-      updatedAt: '2026-11-22T10:00:00.000Z',
+      createdAt: '2026-11-13T10:00:00.000Z',
+      updatedAt: '2026-11-13T10:00:00.000Z',
     });
 
-    await db.collection('BorrowingRequests').doc('req-109').set({
-      requestId: 'req-109',
-      resourceId: 'res-pekom-easels',
+    await db.collection('BorrowingRequests').doc('req-106').set({
+      requestId: 'req-106',
+      resourceId: 'res-pekom-lights',
       ownerClubId: 'club-pekom',
-      requesterClubId: '7tY84DMF1uTQpyEo6Ab6',
-      quantity: 2,
-      purpose: 'Exhibition display panels return.',
-      pickupDate: '2026-11-20',
-      expectedReturnDate: '2026-11-23',
-      actualReturnDate: '2026-11-23',
+      requesterClubId: 'PTUM',
+      quantity: 10,
+      purpose: 'Mid-Autumn Lantern Walk',
+      pickupDate: '2026-11-10',
+      expectedReturnDate: '2026-11-13',
+      actualReturnDate: '2026-11-13',
       status: 'Return Pending',
       wouldHavePurchased: false,
-      createdAt: '2026-11-20T10:00:00.000Z',
-      updatedAt: '2026-11-23T10:00:00.000Z',
+      createdAt: '2026-11-06T10:00:00.000Z',
+      updatedAt: '2026-11-13T10:00:00.000Z',
     });
+
+    await db.collection('BorrowingRequests').doc('req-108').set({
+      requestId: 'req-108',
+      resourceId: 'res-pekom-speaker',
+      ownerClubId: 'club-pekom',
+      requesterClubId: 'REC',
+      quantity: 2,
+      purpose: 'Robotics Demo & Pit Day',
+      pickupDate: '2026-11-11',
+      expectedReturnDate: '2026-11-14',
+      actualReturnDate: '2026-11-14',
+      status: 'Return Pending',
+      wouldHavePurchased: true,
+      remarks: 'Returned to FSKTM lab storage on Monday evening.',
+      createdAt: '2026-11-07T10:00:00.000Z',
+      updatedAt: '2026-11-14T10:00:00.000Z',
+    });
+
+    // Clean up temporary req-109 if it exists
+    await db.collection('BorrowingRequests').doc('req-109').delete().catch(() => {});
 
     return sendSuccess(res, 'Demo data reset successfully in Firestore.');
   } catch (err) {
