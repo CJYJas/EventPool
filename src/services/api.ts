@@ -443,6 +443,80 @@ class ApiService {
         { method: 'DELETE' }
       ),
   };
+
+  // Borrowing Request Endpoints (BE-06 to BE-10)
+  borrowing = {
+    getAll: (params?: {
+      status?: string;
+      resourceId?: string;
+      page?: number;
+      limit?: number;
+    }) => {
+      const q = new URLSearchParams(params as any).toString();
+      return this.request<{
+        requests?: any[];
+        items?: any[];
+        pagination: { page: number; limit: number; total: number; totalPages: number };
+      }>(`/borrowing-requests${q ? `?${q}` : ''}`);
+    },
+    getById: (requestId: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}`),
+    submit: (data: {
+      resourceId: string;
+      eventId: string;
+      quantity: number;
+      purpose: string;
+      pickupDate: string;
+      expectedReturnDate: string;
+      wouldHavePurchased: boolean;
+      remarks?: string;
+    }) =>
+      this.request<any>('/borrowing-requests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    approve: (requestId: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/approve`, {
+        method: 'PATCH',
+      }),
+    reject: (requestId: string, remarks?: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/reject`, {
+        method: 'PATCH',
+        body: JSON.stringify({ remarks: remarks || '' }),
+      }),
+    cancel: (requestId: string, reason?: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/cancel`, {
+        method: 'PATCH',
+        body: JSON.stringify({ reason: reason || 'Cancelled by club' }),
+      }),
+    markBorrowed: (requestId: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/borrow`, {
+        method: 'PATCH',
+      }),
+    submitReturn: (
+      requestId: string,
+      data: { actualReturnDate: string; remarks?: string }
+    ) =>
+      this.request<any>(`/borrowing-requests/${requestId}/return`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    complete: (
+      requestId: string,
+      data: {
+        returnedQuantity: number;
+        usableQuantity: number;
+        damagedQuantity: number;
+        missingQuantity: number;
+        returnCondition?: string;
+        remarks?: string;
+      }
+    ) =>
+      this.request<any>(`/borrowing-requests/${requestId}/complete`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+  };
 }
 
 export const api = new ApiService();
