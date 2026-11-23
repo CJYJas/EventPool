@@ -51,7 +51,7 @@ export const SustainabilityPage: React.FC = () => {
     const computedExpenditure = purchaseIntentCycles.reduce((sum, r) => {
       const res = getResourceById(r.resourceId);
       const qty = r.verification?.reusable ?? r.requestedQuantity;
-      return sum + qty * (res?.estimatedUnitCostRM || 65);
+      return sum + qty * (res?.estimatedUnitCostRM || 0);
     }, 0);
 
     const expenditureAvoided = Math.round(computedExpenditure);
@@ -59,7 +59,7 @@ export const SustainabilityPage: React.FC = () => {
     const computedWeight = completedRequests.reduce((sum, r) => {
       const res = getResourceById(r.resourceId);
       const qty = r.verification?.reusable ?? r.requestedQuantity;
-      return sum + qty * (res?.estimatedUnitWeightKg || 1.8);
+      return sum + qty * (res?.estimatedUnitWeightKg || 0);
     }, 0);
 
     const weightReused = Math.max(0, Math.round(computedWeight));

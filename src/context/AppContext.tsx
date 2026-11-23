@@ -240,6 +240,7 @@ interface AppContextValue {
   archiveResource: (resourceId: string) => { ok: boolean; blocked?: boolean };
   resetDemoData: () => void;
   getClubById: (id?: string | null) => Club | undefined;
+  fetchClubById: (clubId: string) => Promise<Club | undefined>;
   getResourceById: (id?: string | null) => Resource | undefined;
   getRequestById: (id?: string | null) => BorrowRequest | undefined;
 }
@@ -1027,6 +1028,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       estimatedUnitWeightKg: input.estimatedUnitWeightKg,
       createdAt: REFERENCE_TODAY,
     };
+
+    api.resources
+      .create({
+        itemName: input.name.trim(),
+        category: input.category,
+        description: input.description.trim(),
+        totalQuantity: input.totalUnits,
+        condition: input.condition,
+        location: input.location.trim(),
+        remarks: input.remarks.trim(),
+        estimatedUnitCost: input.estimatedUnitCostRM,
+        estimatedUnitWeight: input.estimatedUnitWeightKg,
+      })
+      .then((res) => {
+        if (res.success) {
+          refreshBackendData();
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to create resource on backend:', err);
+      });
+
     setState((prev) => ({
       ...prev,
       resources: [newRes, ...prev.resources],
@@ -1043,11 +1066,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!res) return { ok: false, error: 'Resource not found.' };
     const committed = res.reservedUnits + res.borrowedUnits;
     if (newTotal < committed) {
+      const errMsg = `Cannot reduce total below ${committed} units currently reserved or borrowed.`;
+      showToast(errMsg);
       return {
         ok: false,
-        error: `Cannot reduce total below ${committed} units currently reserved or borrowed.`,
+        error: errMsg,
       };
     }
+
+    api.resources
+      .update(resourceId, { totalQuantity: newTotal })
+      .then(() => refreshBackendData())
+      .catch((err: any) => {
+        if (err?.code === 'QUANTITY_CONFLICT' || err?.status === 409) {
+          showToast(err.message || 'QUANTITY_CONFLICT: Cannot reduce total quantity below reserved/borrowed units.');
+        }
+      });
 
     setState((prev) => ({
       ...prev,
@@ -1074,11 +1108,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     const committed = res.reservedUnits + res.borrowedUnits;
     if (input.totalUnits !== undefined && input.totalUnits < committed) {
+      const errMsg = `Cannot reduce total below ${committed} units currently reserved or borrowed.`;
+      showToast(errMsg);
       return {
         ok: false,
-        error: `Cannot reduce total below ${committed} units currently reserved or borrowed.`,
+        error: errMsg,
       };
     }
+
+    const payload: any = {};
+    if (input.name) payload.itemName = input.name.trim();
+    if (input.category) payload.category = input.category;
+    if (input.description !== undefined) payload.description = input.description.trim();
+    if (input.condition) payload.condition = input.condition;
+    if (input.location !== undefined) payload.location = input.location.trim();
+    if (input.remarks !== undefined) payload.remarks = input.remarks.trim();
+    if (input.totalUnits !== undefined) payload.totalQuantity = input.totalUnits;
+    if (input.estimatedUnitCostRM !== undefined) payload.estimatedUnitCost = input.estimatedUnitCostRM;
+    if (input.estimatedUnitWeightKg !== undefined) payload.estimatedUnitWeight = input.estimatedUnitWeightKg;
+
+    api.resources
+      .update(resourceId, payload)
+      .then(() => refreshBackendData())
+      .catch((err: any) => {
+        if (err?.code === 'QUANTITY_CONFLICT' || err?.status === 409) {
+          showToast(err.message || 'QUANTITY_CONFLICT: Cannot reduce total quantity below reserved/borrowed units.');
+        }
+      });
 
     setState((prev) => ({
       ...prev,
@@ -1109,18 +1165,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     resourceId
   ) => {
     const res = state.resources.find((r) => r.id === resourceId);
+    if (!res) return;
+    const newUnavailable = !res.manualUnavailable;
+
+    api.resources
+      .updateAvailability(resourceId, { isTemporarilyUnavailable: newUnavailable })
+      .then(() => refreshBackendData())
+      .catch(console.error);
+
     setState((prev) => ({
       ...prev,
       resources: prev.resources.map((r) =>
         r.id === resourceId
-          ? { ...r, manualUnavailable: !r.manualUnavailable }
+          ? { ...r, manualUnavailable: newUnavailable }
           : r
       ),
     }));
     showToast(
-      res?.manualUnavailable
+      res.manualUnavailable
         ? `"${res.name}" is now visible as Available.`
-        : `"${res?.name}" marked Unavailable for new requests.`
+        : `"${res.name}" marked Unavailable for new requests.`
     );
   };
 
@@ -1131,8 +1195,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         ['Pending', 'Approved', 'Borrowed', 'Return Pending'].includes(req.status)
     );
     if (hasActiveUse) {
+      showToast('Cannot archive resource with active borrowings (reserved or borrowed units).');
       return { ok: false, blocked: true };
     }
+
+    api.resources
+      .archive(resourceId)
+      .then(() => refreshBackendData())
+      .catch((err: any) => {
+        if (err?.code === 'RESOURCE_HAS_ACTIVE_BORROWINGS' || err?.status === 409) {
+          showToast(err.message || 'RESOURCE_HAS_ACTIVE_BORROWINGS: Cannot archive resource with active borrowings.');
+        }
+      });
+
     setState((prev) => ({
       ...prev,
       resources: prev.resources.map((r) =>
@@ -1170,6 +1245,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     () => new Map(state.requests.map((r) => [r.id, r])),
     [state.requests]
   );
+
+  const fetchClubById = useCallback(async (clubId: string) => {
+    if (!clubId) return undefined;
+    try {
+      const res = await api.clubs.getById(clubId);
+      if (res.success && res.data) {
+        const c = res.data;
+        const club: Club = {
+          id: c.clubId,
+          name: c.clubName,
+          acronym: c.clubName.split(' ').map((w: string) => w[0]).join('').slice(0, 5).toUpperCase(),
+          categoryFocus: 'Student Activity',
+          description: c.description || '',
+          storageLocation: 'UM Campus',
+          contactEmail: c.contactEmail,
+          picPhone: c.picContactNum || '',
+          representativeName: c.clubName + ' Rep',
+          representativeEmail: c.contactEmail,
+          password: '',
+          status: c.isActive === false ? 'Inactive' : 'Active',
+          createdAt: c.createdAt || new Date().toISOString(),
+        };
+        setState((prev) => ({
+          ...prev,
+          clubs: [club, ...prev.clubs.filter((x) => x.id !== club.id)],
+        }));
+        return club;
+      }
+    } catch {
+      // ignore
+    }
+    return undefined;
+  }, []);
+
+  useEffect(() => {
+    if (currentUser?.clubId) {
+      fetchClubById(currentUser.clubId);
+    }
+  }, [currentUser?.clubId, fetchClubById]);
 
   const getClubById = (id?: string | null) => {
     if (!id) return undefined;
@@ -1230,6 +1344,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         archiveResource,
         resetDemoData,
         getClubById,
+        fetchClubById,
         getResourceById,
         getRequestById,
       }}

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Calendar,
@@ -43,6 +43,7 @@ export const MyClubPage: React.FC = () => {
     requests,
     navigate,
     getClubById,
+    fetchClubById,
     getResourceById,
     approveBorrowRequest,
     rejectBorrowRequest,
@@ -60,6 +61,12 @@ export const MyClubPage: React.FC = () => {
     deleteEvent,
     updateOwnClubProfile,
   } = useApp();
+
+  useEffect(() => {
+    if (currentUser?.clubId) {
+      fetchClubById(currentUser.clubId);
+    }
+  }, [currentUser?.clubId, fetchClubById]);
 
   const resolvedClub =
     getClubById(currentUser?.clubId) ||
@@ -86,7 +93,7 @@ export const MyClubPage: React.FC = () => {
           status: 'Active' as const,
           createdAt: new Date().toISOString().slice(0, 10),
         }
-      : getClubById('club-pekom'));
+      : undefined);
 
   const club = resolvedClub;
   const isOwnRep =
@@ -548,6 +555,17 @@ export const MyClubPage: React.FC = () => {
 
   const displayedDirectionalRequests =
     requestDirectionTab === 'incoming' ? incomingRequests : outgoingRequests;
+
+  if (!club) {
+    return (
+      <div className="max-w-[1380px] mx-auto px-4 sm:px-6 py-20 text-center space-y-4">
+        <h2 className="text-2xl font-bold text-[#1F3626]">Club Profile Not Available</h2>
+        <p className="text-sm text-[#4A554E] max-w-md mx-auto">
+          We could not locate an active club profile linked to this account. Please verify with your system administrator or try logging in again.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-[1380px] mx-auto px-4 sm:px-6 py-8 space-y-6">
