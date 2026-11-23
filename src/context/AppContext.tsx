@@ -226,7 +226,7 @@ interface AppContextValue {
   submitBorrowRequest: (input: SubmitBorrowInput) => { ok: boolean; error?: string };
   approveBorrowRequest: (requestId: string) => Promise<{ ok: boolean; error?: string }>;
   rejectBorrowRequest: (requestId: string, reason?: string) => Promise<void>;
-  cancelBorrowRequest: (requestId: string) => Promise<void>;
+  cancelBorrowRequest: (requestId: string, reason?: string) => Promise<void>;
   markPickedUp: (requestId: string) => Promise<void>;
   markReturned: (requestId: string) => Promise<void>;
   confirmReturnVerification: (
@@ -850,7 +850,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Borrowing request rejected and saved to history.');
   };
 
-  const cancelBorrowRequest: AppContextValue['cancelBorrowRequest'] = async (requestId) => {
+  const cancelBorrowRequest: AppContextValue['cancelBorrowRequest'] = async (requestId, reason) => {
+    try {
+      const res = await api.borrowing.cancel(requestId, reason);
+      if (res.success) {
+        showToast('Borrowing request cancelled and stock released.');
+        await refreshBackendData();
+        return;
+      }
+      if (res.message || res.error) {
+        showToast(res.message || 'Failed to cancel borrowing request.');
+        await refreshBackendData();
+        return;
+      }
+    } catch (err: any) {
+      const errMsg = err?.message || 'Conflict: Unable to cancel borrowing request (409).';
+      showToast(errMsg);
+      await refreshBackendData();
+      return;
+    }
+
     const req = state.requests.find((r) => r.id === requestId);
     if (!req || !['Pending', 'Approved'].includes(req.status)) return;
 

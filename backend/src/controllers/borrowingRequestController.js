@@ -515,6 +515,132 @@ export const rejectBorrowingRequest = async (req, res) => {
 };
 
 
+
+export const cancelBorrowingRequest = async (req, res) => {
+  try {
+    const { requestId } = req.params;
+    const { remarks, reason } = req.body || {};
+    const clubId = req.user?.clubId;
+
+    if (!requestId) {
+      return sendError(res, 'Request ID is required', 'INVALID_INPUT', 400);
+    }
+
+    const requestRef = db.collection('BorrowingRequests').doc(requestId);
+
+    let result;
+
+    await db.runTransaction(async (transaction) => {
+      const requestSnap = await transaction.get(requestRef);
+
+      if (!requestSnap.exists) {
+        const error = new Error('Borrowing request not found');
+        error.code = 'REQUEST_NOT_FOUND';
+        throw error;
+      }
+
+      const requestData = requestSnap.data();
+
+      // Authorization: requesting club (borrower) or resource owner or admin
+      const isRequester = requestData.requesterClubId === clubId;
+      const isOwner = requestData.ownerClubId === clubId;
+      const isAdmin = req.user?.role === 'admin';
+
+      if (!isRequester && !isOwner && !isAdmin) {
+        const error = new Error('You are not authorized to cancel this borrowing request');
+        error.code = 'FORBIDDEN';
+        throw error;
+      }
+
+      // Cancellation only allowed for 'Pending' or 'Approved' requests
+      if (!['Pending', 'Approved'].includes(requestData.status)) {
+        const error = new Error(`Only Pending or Approved requests can be cancelled. Current status is ${requestData.status}`);
+        error.code = 'INVALID_STATUS_TRANSITION';
+        throw error;
+      }
+
+      const timestamp = new Date().toISOString();
+      const cancelReason = (reason || remarks || '').trim() || 'Request cancelled by club';
+
+      // If Approved, release reserved stock back to available
+      if (requestData.status === 'Approved') {
+        const resourceRef = db.collection('Resources').doc(requestData.resourceId);
+        const resourceSnap = await transaction.get(resourceRef);
+
+        if (resourceSnap.exists) {
+          const resourceData = resourceSnap.data();
+          const quantity = Number(requestData.quantity) || 0;
+          const availableQuantity = Number(resourceData.availableQuantity) || 0;
+          const reservedQuantity = Number(resourceData.reservedQuantity) || 0;
+
+          const newReservedQuantity = Math.max(0, reservedQuantity - quantity);
+          const newAvailableQuantity = availableQuantity + quantity;
+
+          const newStatus = calculateResourceStatus({
+            ...resourceData,
+            availableQuantity: newAvailableQuantity,
+            reservedQuantity: newReservedQuantity
+          });
+
+          transaction.update(resourceRef, {
+            availableQuantity: newAvailableQuantity,
+            reservedQuantity: newReservedQuantity,
+            status: newStatus,
+            updatedAt: timestamp
+          });
+        }
+      }
+
+      // Update borrowing request status to Cancelled
+      transaction.update(requestRef, {
+        status: 'Cancelled',
+        cancellationReason: cancelReason,
+        cancelledAt: timestamp,
+        updatedAt: timestamp
+      });
+
+      result = {
+        requestId,
+        status: 'Cancelled',
+        cancellationReason: cancelReason,
+        cancelledAt: timestamp
+      };
+    });
+
+    return sendSuccess(
+      res,
+      'Borrowing request cancelled successfully',
+      result
+    );
+
+  } catch (err) {
+    console.error('Cancel borrowing request error:', err);
+
+    const errorResponses = {
+      REQUEST_NOT_FOUND: ['Borrowing request not found', 404],
+      RESOURCE_NOT_FOUND: ['Resource not found', 404],
+      FORBIDDEN: ['You are not authorized to cancel this borrowing request', 403],
+      INVALID_STATUS_TRANSITION: [
+        err.message || 'Cannot cancel request in current status',
+        409
+      ]
+    };
+
+    const errorResponse = errorResponses[err.code];
+    if (errorResponse) {
+      return sendError(res, errorResponse[0], err.code, errorResponse[1]);
+    }
+
+    return sendError(
+      res,
+      'Failed to cancel borrowing request',
+      'INTERNAL_ERROR',
+      500
+    );
+  }
+};
+
+
 const addOverdueFlags = (requestData) => {
   const now = Date.now();
 

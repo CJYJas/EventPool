@@ -4,6 +4,7 @@ import {
   submitBorrowingRequest,
   approveBorrowingRequest,
   rejectBorrowingRequest,
+  cancelBorrowingRequest,
   getBorrowingRequests,
   getBorrowingRequestById,
   submitResourceReturn,
@@ -25,6 +26,7 @@ router.get('/:requestId', getBorrowingRequestById);
 router.post('/', requireClub, submitBorrowingRequest);
 router.patch('/:requestId/approve', requireClub, approveBorrowingRequest);
 router.patch('/:requestId/reject', requireClub, rejectBorrowingRequest);
+router.patch('/:requestId/cancel', requireClub, cancelBorrowingRequest);
 router.patch('/:requestId/return', requireClub, submitResourceReturn);
 router.patch('/:requestId/complete', requireClub, completeBorrowingRequest);
 router.patch('/:requestId/borrow', requireClub, markResourceBorrowed);

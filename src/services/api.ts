@@ -484,9 +484,10 @@ class ApiService {
         method: 'PATCH',
         body: JSON.stringify({ remarks: remarks || '' }),
       }),
-    cancel: (requestId: string) =>
+    cancel: (requestId: string, reason?: string) =>
       this.request<any>(`/borrowing-requests/${requestId}/cancel`, {
         method: 'PATCH',
+        body: JSON.stringify({ reason: reason || 'Cancelled by club' }),
       }),
     markBorrowed: (requestId: string) =>
       this.request<any>(`/borrowing-requests/${requestId}/borrow`, {
