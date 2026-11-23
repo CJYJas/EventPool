@@ -1230,7 +1230,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { ok: true };
   };
 
-  const resetDemoData = () => {
+  const resetDemoData = async () => {
+    try {
+      await fetch('/api/dev/reset-demo', { method: 'POST' });
+    } catch (err) {
+      console.warn('Backend reset skipped or failed:', err);
+    }
     const fresh: PersistedState = {
       clubs: INITIAL_CLUBS,
       events: INITIAL_EVENTS,
@@ -1239,7 +1244,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       accessRequests: INITIAL_ACCESS_REQUESTS,
     };
     setState(fresh);
-    refreshBackendData();
+    await refreshBackendData();
     showToast('Demo data restored to initial state.');
   };
 
