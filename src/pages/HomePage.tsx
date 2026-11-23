@@ -49,7 +49,10 @@ export const HomePage: React.FC = () => {
     () =>
       resources
         .filter((r) => !r.archived)
-        .filter((r) => getClubById(r.clubId)?.status === 'Active')
+        .filter((r) => {
+          const club = getClubById(r.clubId);
+          return !club || club.status === 'Active';
+        })
         .slice(0, 4),
     [resources, getClubById]
   );
@@ -86,9 +89,9 @@ export const HomePage: React.FC = () => {
       totalResources,
       pendingRequests,
       completedCount: completedRequests.length,
-      reusedWeightKg: Math.round(18 + Math.max(0, liveWeightKg - 130)),
-      itemsReused: 144 + Math.max(0, liveReusedItems - 46),
-      expenditureAvoidedRM: 6600 + Math.max(0, Math.round(liveExpenditureRM - 4500)),
+      reusedWeightKg: Math.round(liveWeightKg),
+      itemsReused: liveReusedItems,
+      expenditureAvoidedRM: Math.round(liveExpenditureRM),
     };
   }, [clubs, resources, requests, getResourceById]);
 

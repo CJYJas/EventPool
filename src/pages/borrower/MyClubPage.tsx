@@ -61,9 +61,36 @@ export const MyClubPage: React.FC = () => {
     updateOwnClubProfile,
   } = useApp();
 
-  const club = getClubById(currentUser?.clubId || 'club-pekom');
+  const resolvedClub =
+    getClubById(currentUser?.clubId) ||
+    (currentUser?.role === 'club_rep' && currentUser.clubId
+      ? {
+          id: currentUser.clubId,
+          name: currentUser.name || 'Student Club',
+          acronym: currentUser.name
+            ? currentUser.name
+                .split(' ')
+                .map((w) => w[0])
+                .join('')
+                .slice(0, 5)
+                .toUpperCase()
+            : 'CLUB',
+          categoryFocus: 'Student Activity',
+          description: 'Official Universiti Malaya student club profile.',
+          storageLocation: 'UM Campus',
+          contactEmail: currentUser.email,
+          picPhone: '+60 12-345 6789',
+          representativeName: currentUser.name,
+          representativeEmail: currentUser.email,
+          password: '',
+          status: 'Active' as const,
+          createdAt: new Date().toISOString().slice(0, 10),
+        }
+      : getClubById('club-pekom'));
+
+  const club = resolvedClub;
   const isOwnRep =
-    currentUser?.role === 'club_rep' && currentUser.clubId === club?.id;
+    currentUser?.role === 'club_rep' && (currentUser.clubId === club?.id || !currentUser.clubId);
 
   // Subtabs under MyClub: Operations | Events | Club Profile
   const [activeSubtab, setActiveSubtab] = useState<
@@ -270,11 +297,11 @@ export const MyClubPage: React.FC = () => {
     );
   }
 
-  const handleVerifySubmit = (e: React.FormEvent) => {
+  const handleVerifySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeReturnItem) return;
     setVerifyError('');
-    const result = confirmReturnVerification(activeReturnItem.id, {
+    const result = await confirmReturnVerification(activeReturnItem.id, {
       reusable: reusableCount,
       damaged: damagedCount,
       missing: missingCount,

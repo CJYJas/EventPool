@@ -224,15 +224,15 @@ interface AppContextValue {
   }) => void;
   // Borrowing & inventory lifecycle
   submitBorrowRequest: (input: SubmitBorrowInput) => { ok: boolean; error?: string };
-  approveBorrowRequest: (requestId: string) => { ok: boolean; error?: string };
-  rejectBorrowRequest: (requestId: string, reason?: string) => void;
-  cancelBorrowRequest: (requestId: string) => void;
-  markPickedUp: (requestId: string) => void;
-  markReturned: (requestId: string) => void;
+  approveBorrowRequest: (requestId: string) => Promise<{ ok: boolean; error?: string }>;
+  rejectBorrowRequest: (requestId: string, reason?: string) => Promise<void>;
+  cancelBorrowRequest: (requestId: string) => Promise<void>;
+  markPickedUp: (requestId: string) => Promise<void>;
+  markReturned: (requestId: string) => Promise<void>;
   confirmReturnVerification: (
     requestId: string,
     counts: { reusable: number; damaged: number; missing: number }
-  ) => { ok: boolean; error?: string };
+  ) => Promise<{ ok: boolean; error?: string }>;
   addResource: (input: AddResourceInput) => Resource;
   editResourceQuantity: (resourceId: string, newTotal: number) => { ok: boolean; error?: string };
   updateResource: (resourceId: string, input: Partial<AddResourceInput>) => { ok: boolean; error?: string };
@@ -279,102 +279,136 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [state]);
 
   // Synchronize with backend API when backend is running
-  useEffect(() => {
-    let active = true;
-    async function syncWithBackend() {
-      try {
-        const health = await api.health();
-        if (health.success && active) {
-          console.log('[EventPool] Connected to Backend API:', health.message);
-          const [clubsRes, resourcesRes, eventsRes] = await Promise.all([
-            api.clubs.getAll(),
-            api.resources.getAll({ limit: 100 }),
-            api.events.getAll(),
-          ]);
+  const refreshBackendData = useCallback(async () => {
+    try {
+      const health = await api.health();
+      if (!health.success) return;
 
-          if (!active) return;
+      const [clubsRes, resourcesRes, eventsRes, borrowingRes] = await Promise.all([
+        api.clubs.getAll(),
+        api.resources.getAll({ limit: 100 }),
+        api.events.getAll(),
+        api.borrowing.getAll({ limit: 100 }),
+      ]);
 
-          setState((prev) => {
-            let updatedClubs = [...prev.clubs];
-            if (clubsRes.success && Array.isArray(clubsRes.data) && clubsRes.data.length > 0) {
-              const apiClubs: Club[] = clubsRes.data.map((c: any) => ({
-                id: c.clubId,
-                name: c.clubName,
-                acronym: c.clubName.split(' ').map((w: string) => w[0]).join('').slice(0, 5).toUpperCase(),
-                categoryFocus: 'Student Activity',
-                description: c.description || '',
-                storageLocation: 'UM Campus',
-                contactEmail: c.contactEmail,
-                picPhone: c.picContactNum || '',
-                representativeName: c.clubName + ' Rep',
-                representativeEmail: c.contactEmail,
-                password: '',
-                status: c.isActive === false ? 'Inactive' : 'Active',
-                createdAt: c.createdAt || new Date().toISOString(),
-              }));
-              const apiClubIds = new Set(apiClubs.map((c) => c.id));
-              updatedClubs = [...apiClubs, ...prev.clubs.filter((c) => !apiClubIds.has(c.id))];
-            }
+      setState((prev) => {
+        let updatedClubs = [...prev.clubs];
+        if (clubsRes.success && Array.isArray(clubsRes.data) && clubsRes.data.length > 0) {
+          const apiClubs: Club[] = clubsRes.data.map((c: any) => ({
+            id: c.clubId,
+            name: c.clubName,
+            acronym: c.clubName.split(' ').map((w: string) => w[0]).join('').slice(0, 5).toUpperCase(),
+            categoryFocus: 'Student Activity',
+            description: c.description || '',
+            storageLocation: 'UM Campus',
+            contactEmail: c.contactEmail,
+            picPhone: c.picContactNum || '',
+            representativeName: c.clubName + ' Rep',
+            representativeEmail: c.contactEmail,
+            password: '',
+            status: c.isActive === false ? 'Inactive' : 'Active',
+            createdAt: c.createdAt || new Date().toISOString(),
+          }));
+          const apiClubIds = new Set(apiClubs.map((c) => c.id));
+          updatedClubs = [...apiClubs, ...prev.clubs.filter((c) => !apiClubIds.has(c.id))];
+        }
 
-            let updatedResources = [...prev.resources];
-            if (resourcesRes.success && resourcesRes.data?.items && resourcesRes.data.items.length > 0) {
-              const apiResources: Resource[] = resourcesRes.data.items.map((r: any) => ({
-                id: r.resourceId,
-                clubId: r.clubId,
-                name: r.itemName,
-                category: (r.category || 'Electronics') as ResourceCategory,
-                totalUnits: r.totalQuantity,
-                availableUnits: r.availableQuantity,
-                reservedUnits: r.reservedQuantity || 0,
-                borrowedUnits: r.borrowedQuantity || 0,
-                condition: (r.condition || 'Good') as any,
-                location: r.location || '',
-                description: r.description || '',
-                remarks: r.remarks || '',
-                images: r.imageURL ? [r.imageURL] : [],
-                archived: r.isArchived || false,
-                manualUnavailable: r.isTemporarilyUnavailable || false,
-                estimatedUnitCostRM: r.estimatedUnitCost,
-                estimatedUnitWeightKg: r.estimatedUnitWeight,
-                createdAt: r.createdAt || new Date().toISOString(),
-              }));
-              const apiResIds = new Set(apiResources.map((r) => r.id));
-              updatedResources = [...apiResources, ...prev.resources.filter((r) => !apiResIds.has(r.id))];
-            }
+        let updatedResources = [...prev.resources];
+        if (resourcesRes.success && resourcesRes.data?.items && resourcesRes.data.items.length > 0) {
+          const apiResources: Resource[] = resourcesRes.data.items.map((r: any) => ({
+            id: r.resourceId,
+            clubId: r.clubId,
+            name: r.itemName,
+            category: (r.category || 'Electronics') as ResourceCategory,
+            totalUnits: r.totalQuantity,
+            availableUnits: r.availableQuantity,
+            reservedUnits: r.reservedQuantity || 0,
+            borrowedUnits: r.borrowedQuantity || 0,
+            condition: (r.condition || 'Good') as any,
+            location: r.location || '',
+            description: r.description || '',
+            remarks: r.remarks || '',
+            images: r.imageURL ? [r.imageURL] : [],
+            archived: r.isArchived || false,
+            manualUnavailable: r.isTemporarilyUnavailable || false,
+            estimatedUnitCostRM: r.estimatedUnitCost,
+            estimatedUnitWeightKg: r.estimatedUnitWeight,
+            createdAt: r.createdAt || new Date().toISOString(),
+          }));
+          const apiResIds = new Set(apiResources.map((r) => r.id));
+          updatedResources = [...apiResources, ...prev.resources.filter((r) => !apiResIds.has(r.id))];
+        }
 
-            let updatedEvents = [...prev.events];
-            if (eventsRes.success && Array.isArray(eventsRes.data) && eventsRes.data.length > 0) {
-              const apiEvents: ClubEvent[] = eventsRes.data.map((e: any) => ({
-                id: e.eventId,
-                clubId: e.clubId,
-                name: e.eventName,
-                date: e.eventDate,
-                purpose: e.purpose,
-                description: e.description,
-                createdAt: e.createdAt,
-              }));
-              const apiEventIds = new Set(apiEvents.map((e) => e.id));
-              updatedEvents = [...apiEvents, ...prev.events.filter((e) => !apiEventIds.has(e.id))];
-            }
+        let updatedEvents = [...prev.events];
+        if (eventsRes.success && Array.isArray(eventsRes.data) && eventsRes.data.length > 0) {
+          const apiEvents: ClubEvent[] = eventsRes.data.map((e: any) => ({
+            id: e.eventId,
+            clubId: e.clubId,
+            name: e.eventName,
+            date: e.eventDate,
+            purpose: e.purpose,
+            description: e.description,
+            createdAt: e.createdAt,
+          }));
+          const apiEventIds = new Set(apiEvents.map((e) => e.id));
+          updatedEvents = [...apiEvents, ...prev.events.filter((e) => !apiEventIds.has(e.id))];
+        }
 
+        let updatedRequests = [...prev.requests];
+        const rawData = borrowingRes.success ? (borrowingRes.data as any) : null;
+        const rawReqs = rawData?.requests || rawData?.items || (Array.isArray(rawData) ? rawData : []);
+        if (rawReqs && rawReqs.length > 0) {
+          const apiRequests: BorrowRequest[] = rawReqs.map((r: any) => {
+            const event = updatedEvents.find((e) => e.id === r.eventId);
             return {
-              ...prev,
-              clubs: updatedClubs,
-              resources: updatedResources,
-              events: updatedEvents,
+              id: r.requestId || r.id,
+              resourceId: r.resourceId,
+              ownerClubId: r.ownerClubId,
+              borrowerClubId: r.requesterClubId || r.borrowerClubId,
+              eventId: r.eventId,
+              eventName: event?.name || r.eventName || 'Club Event',
+              requestedQuantity: r.quantity ?? r.requestedQuantity ?? 1,
+              purpose: r.purpose || '',
+              wouldOtherwisePurchase: Boolean(r.wouldHavePurchased ?? r.wouldOtherwisePurchase),
+              remarks: r.remarks || '',
+              pickupDate: r.pickupDate,
+              expectedReturnDate: r.expectedReturnDate,
+              status: r.status,
+              createdAt: r.createdAt,
+              updatedAt: r.updatedAt || r.createdAt,
+              returnedDate: r.actualReturnDate || r.returnedDate,
+              verification:
+                r.usableQuantity !== undefined || r.verification
+                  ? {
+                      reusable: r.usableQuantity ?? r.verification?.reusable ?? 0,
+                      damaged: r.damagedQuantity ?? r.verification?.damaged ?? 0,
+                      missing: r.missingQuantity ?? r.verification?.missing ?? 0,
+                      verifiedAt: r.updatedAt || r.createdAt || '',
+                    }
+                  : undefined,
+              rejectionReason: r.rejectionRemarks || r.rejectionReason,
             };
           });
+          const apiReqIds = new Set(apiRequests.map((r) => r.id));
+          updatedRequests = [...apiRequests, ...prev.requests.filter((r) => !apiReqIds.has(r.id))];
         }
-      } catch {
-        // Fallback silently to local state when backend is offline
-      }
-    }
 
-    syncWithBackend();
-    return () => {
-      active = false;
-    };
+        return {
+          ...prev,
+          clubs: updatedClubs,
+          resources: updatedResources,
+          events: updatedEvents,
+          requests: updatedRequests,
+        };
+      });
+    } catch {
+      // Fallback silently to local state when backend is offline
+    }
   }, []);
+
+  useEffect(() => {
+    refreshBackendData();
+  }, [refreshBackendData]);
 
   useEffect(() => {
     if (!toastMessage) return;
@@ -730,7 +764,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { ok: true };
   };
 
-  const approveBorrowRequest: AppContextValue['approveBorrowRequest'] = (requestId) => {
+  const approveBorrowRequest: AppContextValue['approveBorrowRequest'] = async (requestId) => {
+    try {
+      const res = await api.borrowing.approve(requestId);
+      if (res.success) {
+        showToast('Borrowing request approved. Stock has been reserved.');
+        await refreshBackendData();
+        return { ok: true };
+      }
+      if (res.message || res.error) {
+        const errMsg = res.message || 'Failed to approve request.';
+        showToast(errMsg);
+        return { ok: false, error: errMsg };
+      }
+    } catch {
+      // Local fallback for offline mode
+    }
+
     const req = state.requests.find((r) => r.id === requestId);
     if (!req) return { ok: false, error: 'Request not found.' };
     const resource = state.resources.find((r) => r.id === req.resourceId);
@@ -760,7 +810,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { ok: true };
   };
 
-  const rejectBorrowRequest: AppContextValue['rejectBorrowRequest'] = (requestId, reason) => {
+  const rejectBorrowRequest: AppContextValue['rejectBorrowRequest'] = async (requestId, reason) => {
+    try {
+      const res = await api.borrowing.reject(requestId, reason);
+      if (res.success) {
+        showToast('Borrowing request rejected and saved to history.');
+        await refreshBackendData();
+        return;
+      }
+      if (res.message || res.error) {
+        showToast(res.message || 'Failed to reject request.');
+      }
+    } catch {
+      // Fallback
+    }
+
     setState((prev) => ({
       ...prev,
       requests: prev.requests.map((r) =>
@@ -777,7 +841,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Borrowing request rejected and saved to history.');
   };
 
-  const cancelBorrowRequest: AppContextValue['cancelBorrowRequest'] = (requestId) => {
+  const cancelBorrowRequest: AppContextValue['cancelBorrowRequest'] = async (requestId) => {
     const req = state.requests.find((r) => r.id === requestId);
     if (!req || !['Pending', 'Approved'].includes(req.status)) return;
 
@@ -802,7 +866,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Borrowing request cancelled and saved to history.');
   };
 
-  const markPickedUp: AppContextValue['markPickedUp'] = (requestId) => {
+  const markPickedUp: AppContextValue['markPickedUp'] = async (requestId) => {
+    try {
+      const res = await api.borrowing.markBorrowed(requestId);
+      if (res.success) {
+        showToast('Marked as Borrowed (picked up).');
+        await refreshBackendData();
+        return;
+      }
+      if (res.message || res.error) {
+        showToast(res.message || 'Failed to mark as borrowed.');
+      }
+    } catch {
+      // Fallback
+    }
+
     const req = state.requests.find((r) => r.id === requestId);
     if (!req || req.status !== 'Approved') return;
     setState((prev) => ({
@@ -823,7 +901,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Marked as Borrowed (picked up).');
   };
 
-  const markReturned: AppContextValue['markReturned'] = (requestId) => {
+  const markReturned: AppContextValue['markReturned'] = async (requestId) => {
+    try {
+      const res = await api.borrowing.submitReturn(requestId, {
+        actualReturnDate: new Date().toISOString().slice(0, 10),
+        remarks: 'Item returned by borrower',
+      });
+      if (res.success) {
+        showToast('Return submitted. Awaiting owner verification.');
+        await refreshBackendData();
+        return;
+      }
+      if (res.message || res.error) {
+        showToast(res.message || 'Failed to submit return.');
+      }
+    } catch {
+      // Fallback
+    }
+
     const req = state.requests.find((r) => r.id === requestId);
     if (!req || req.status !== 'Borrowed') return;
     setState((prev) => ({
@@ -842,13 +937,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Return submitted. Awaiting owner verification.');
   };
 
-  const confirmReturnVerification: AppContextValue['confirmReturnVerification'] = (
+  const confirmReturnVerification: AppContextValue['confirmReturnVerification'] = async (
     requestId,
     counts
   ) => {
+    const total = counts.reusable + counts.damaged + counts.missing;
+    try {
+      const res = await api.borrowing.complete(requestId, {
+        returnedQuantity: counts.reusable + counts.damaged,
+        usableQuantity: counts.reusable,
+        damagedQuantity: counts.damaged,
+        missingQuantity: counts.missing,
+        returnCondition: 'Good',
+        remarks: 'Return verified by club owner',
+      });
+      if (res.success) {
+        showToast(
+          `Return verified & completed. ${counts.reusable} reusable unit${counts.reusable === 1 ? '' : 's'} returned to stock.`
+        );
+        await refreshBackendData();
+        return { ok: true };
+      }
+      if (res.message || res.error) {
+        const errMsg = res.message || 'Failed to verify return.';
+        showToast(errMsg);
+        return { ok: false, error: errMsg };
+      }
+    } catch {
+      // Fallback
+    }
+
     const req = state.requests.find((r) => r.id === requestId);
     if (!req) return { ok: false, error: 'Request not found.' };
-    const total = counts.reusable + counts.damaged + counts.missing;
     if (total !== req.requestedQuantity) {
       return {
         ok: false,
@@ -1051,7 +1171,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     [state.requests]
   );
 
-  const getClubById = (id?: string | null) => (id ? clubMap.get(id) : undefined);
+  const getClubById = (id?: string | null) => {
+    if (!id) return undefined;
+    const direct = clubMap.get(id);
+    if (direct) return direct;
+    return Array.from(clubMap.values()).find(
+      (c) => c.id.toLowerCase() === id.toLowerCase() || c.acronym.toLowerCase() === id.toLowerCase()
+    );
+  };
   const getResourceById = (id?: string | null) =>
     id ? resourceMap.get(id) : undefined;
   const getRequestById = (id?: string | null) =>

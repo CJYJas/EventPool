@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from 'react';
 import { Calendar, Info, Users } from 'lucide-react';
-import { BASELINE_MONTHLY_SHARES } from '../data/seedData';
 import { useApp } from '../context/AppContext';
 
 export const SustainabilityPage: React.FC = () => {
@@ -38,20 +37,12 @@ export const SustainabilityPage: React.FC = () => {
   }, [requests, effectiveClubId, period]);
 
   const metrics = useMemo(() => {
-    const isAllPlatform = effectiveClubId === 'all' && period === 'jun_nov';
-    const extraCycles = Math.max(0, completedRequests.length - 6);
-    const completedCycles = isAllPlatform
-      ? 36 + extraCycles
-      : completedRequests.length;
+    const completedCycles = completedRequests.length;
 
-    const liveUnits = completedRequests.reduce(
+    const unitsReused = completedRequests.reduce(
       (sum, r) => sum + (r.verification?.reusable ?? r.requestedQuantity),
       0
     );
-
-    const unitsReused = isAllPlatform
-      ? 144 + Math.max(0, liveUnits - 46)
-      : liveUnits;
 
     // Expenditure avoided = sum of replacement cost ONLY where wouldOtherwisePurchase === true (NO borrowing cost subtraction!)
     const purchaseIntentCycles = completedRequests.filter(
@@ -63,9 +54,7 @@ export const SustainabilityPage: React.FC = () => {
       return sum + qty * (res?.estimatedUnitCostRM || 65);
     }, 0);
 
-    const expenditureAvoided = isAllPlatform
-      ? 6600 + Math.max(0, Math.round(computedExpenditure - 4500))
-      : Math.round(computedExpenditure);
+    const expenditureAvoided = Math.round(computedExpenditure);
 
     const computedWeight = completedRequests.reduce((sum, r) => {
       const res = getResourceById(r.resourceId);
@@ -73,40 +62,29 @@ export const SustainabilityPage: React.FC = () => {
       return sum + qty * (res?.estimatedUnitWeightKg || 1.8);
     }, 0);
 
-    const weightReused = isAllPlatform
-      ? 18 + Math.max(0, Math.round(computedWeight - 130))
-      : Math.max(0, Math.round(computedWeight));
+    const weightReused = Math.max(0, Math.round(computedWeight));
 
     return {
       completedCycles,
       unitsReused,
       expenditureAvoided,
-      purchaseIntentCount: isAllPlatform
-        ? 18 + Math.max(0, purchaseIntentCycles.length - 5)
-        : purchaseIntentCycles.length,
+      purchaseIntentCount: purchaseIntentCycles.length,
       weightReused,
     };
-  }, [completedRequests, effectiveClubId, period, getResourceById]);
+  }, [completedRequests, getResourceById]);
 
   const monthlyData = useMemo(() => {
-    const base =
-      period === 'q4'
-        ? BASELINE_MONTHLY_SHARES.filter((m) => ['Oct', 'Nov'].includes(m.month))
-        : BASELINE_MONTHLY_SHARES;
-
-    if (effectiveClubId === 'all') {
-      return base;
-    }
-
     const monthLabels = ['Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov'];
-    return base.map((b) => {
-      const monthIdx = monthLabels.indexOf(b.month) + 6;
+    const activeMonths = period === 'q4' ? ['Oct', 'Nov'] : monthLabels;
+
+    return activeMonths.map((m) => {
+      const monthIdx = monthLabels.indexOf(m) + 6;
       const monthStr = String(monthIdx).padStart(2, '0');
       const matches = completedRequests.filter(
-        (r) => (r.returnedDate || r.expectedReturnDate).slice(5, 7) === monthStr
+        (r) => (r.returnedDate || r.expectedReturnDate || r.updatedAt || '').slice(5, 7) === monthStr
       );
       return {
-        month: b.month,
+        month: m,
         cycles: matches.length,
         units: matches.reduce(
           (sum, r) => sum + (r.verification?.reusable ?? r.requestedQuantity),
@@ -114,21 +92,11 @@ export const SustainabilityPage: React.FC = () => {
         ),
       };
     });
-  }, [period, effectiveClubId, completedRequests]);
+  }, [period, completedRequests]);
 
   const maxMonthlyUnits = Math.max(1, ...monthlyData.map((m) => m.units));
 
   const categoryBreakdown = useMemo(() => {
-    const isAll = effectiveClubId === 'all' && period === 'jun_nov';
-    if (isAll) {
-      return [
-        { label: 'Furniture', units: 64 },
-        { label: 'Equipment', units: 40 },
-        { label: 'Decorations', units: 32 },
-        { label: 'Others', units: 8 },
-      ];
-    }
-
     const counts: Record<string, number> = {
       Furniture: 0,
       Equipment: 0,
@@ -151,7 +119,7 @@ export const SustainabilityPage: React.FC = () => {
     });
 
     return Object.entries(counts).map(([label, units]) => ({ label, units }));
-  }, [effectiveClubId, period, completedRequests, getResourceById]);
+  }, [completedRequests, getResourceById]);
 
   const totalCategoryUnits = Math.max(
     1,

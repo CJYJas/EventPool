@@ -12,13 +12,14 @@ import resourceRoutes from './routes/resourceRoutes.js';
 import { sendError, sendSuccess } from './utils/response.js';
 import borrowingRequestRoutes from './routes/borrowingRequestRoutes.js';
 
-dotenv.config();
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+dotenv.config({ path: path.resolve(__dirname, '../.env') });
+dotenv.config();
+
 const app = express();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5001;
 
 // Enable CORS and body parsers
 app.use(cors());
