@@ -1239,6 +1239,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       accessRequests: INITIAL_ACCESS_REQUESTS,
     };
     setState(fresh);
+    refreshBackendData();
     showToast('Demo data restored to initial state.');
   };
 
