@@ -970,10 +970,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (res.message || res.error) {
         const errMsg = res.message || 'Failed to verify return.';
         showToast(errMsg);
+        await refreshBackendData();
         return { ok: false, error: errMsg };
       }
-    } catch {
-      // Fallback
+    } catch (err: any) {
+      await refreshBackendData();
+      const errMsg = err?.message || 'Conflict: Unable to verify return (409).';
+      showToast(errMsg);
+      return { ok: false, error: errMsg };
     }
 
     const req = state.requests.find((r) => r.id === requestId);
