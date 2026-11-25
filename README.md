@@ -3,7 +3,7 @@
 A resource-sharing platform for UM student clubs to list, discover and borrow event equipment from each other.
 Built for WIX2002 (Project Management).
 
-**Deployed prototype:** _Local stack verified on `http://localhost:3000` (Frontend) & `http://localhost:5000/api` (Backend) — Cloud deployment (Vercel + Render) scheduled for P8 sign-off._
+**Deployed prototype:** https://event-pool.vercel.app/
 
 ## Getting started
 
@@ -103,7 +103,7 @@ All modules are covered by self-cleaning automated test suites that delete their
 ## Deployment Guide (P8)
 
 * **Backend ([`render.yaml`](render.yaml)):** Deploy `backend/` on Render/Fly.io with `npm start` and set environment variables: `PORT`, `FIREBASE_WEB_API_KEY`, `FIREBASE_SERVICE_ACCOUNT_JSON` (raw or Base64 JSON), and `CORS_ORIGIN`.
-* **Frontend ([`vercel.json`](vercel.json)):** Deploy root Vite app on Vercel/Netlify (`npm run build`, output `dist/`) with `VITE_API_BASE_URL` pointing to the deployed backend URL and `VITE_FIREBASE_WEB_API_KEY`. Once live, update the **Deployed prototype** link at the top of this README.
+* **Frontend ([`vercel.json`](vercel.json)):** Deployed on Vercel at https://event-pool.vercel.app/ (`npm run build`, output `dist/`) with `VITE_API_BASE_URL` pointing to the deployed backend URL and `VITE_FIREBASE_WEB_API_KEY`.
 
 ## Routes
 
