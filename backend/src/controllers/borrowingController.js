@@ -1,6 +1,14 @@
 import { db } from '../config/firebase.js';
 import { sendSuccess, sendError, formatTimestamp } from '../utils/response.js';
-import { computeResourceStatus } from './resourceController.js';
+import { calculateResourceStatus } from '../utils/resourceStatus.js';
+
+const computeResourceStatus = (resource) => {
+  try {
+    return calculateResourceStatus(resource);
+  } catch {
+    return 'Unavailable';
+  }
+};
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
 

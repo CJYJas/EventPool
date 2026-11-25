@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   ArrowRight,
   Check,
@@ -20,6 +20,7 @@ import { CreateClubAccountModal } from '../components/CreateClubAccountModal';
 import { PageHeader } from '../components/PageHeader';
 import { StatusBadge } from '../components/StatusBadge';
 import { useApp } from '../context/AppContext';
+import { api } from '../services/api';
 import type { Club } from '../types/eventpool';
 
 export const AdminDashboardPage: React.FC = () => {
@@ -60,16 +61,40 @@ export const AdminDashboardPage: React.FC = () => {
   const [createOpen, setCreateOpen] = useState(false);
   const [editingClub, setEditingClub] = useState<Club | null>(null);
   const [deactivatingClub, setDeactivatingClub] = useState<Club | null>(null);
+  const [remoteStats, setRemoteStats] = useState<{
+    totalClubs: number;
+    activeClubs: number;
+    totalResources: number;
+    totalBorrowingRequests: number;
+    pendingRequests: number;
+    completedRequests: number;
+  } | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    api.admin
+      .getDashboard()
+      .then((res) => {
+        if (res.success && res.data && active) {
+          setRemoteStats(res.data);
+        }
+      })
+      .catch(console.error);
+    return () => {
+      active = false;
+    };
+  }, []);
 
   const metrics = useMemo(() => {
-    const totalClubs = clubs.length;
-    const activeClubs = clubs.filter((c) => c.status === 'Active').length;
-    const inactiveClubs = clubs.filter((c) => c.status === 'Inactive').length;
+    const totalClubs = remoteStats?.totalClubs ?? clubs.length;
+    const activeClubs = remoteStats?.activeClubs ?? clubs.filter((c) => c.status === 'Active').length;
+    const inactiveClubs = Math.max(0, totalClubs - activeClubs);
     const activeResources = resources.filter((r) => !r.archived);
+    const totalListings = remoteStats?.totalResources ?? activeResources.length;
     const totalUnits = activeResources.reduce((s, r) => s + r.totalUnits, 0);
-    const totalBorrowing = requests.length;
-    const pendingRequests = requests.filter((r) => r.status === 'Pending').length;
-    const completedRequests = requests.filter(
+    const totalBorrowing = remoteStats?.totalBorrowingRequests ?? requests.length;
+    const pendingRequests = remoteStats?.pendingRequests ?? requests.filter((r) => r.status === 'Pending').length;
+    const completedRequests = remoteStats?.completedRequests ?? requests.filter(
       (r) => r.status === 'Completed'
     ).length;
 
@@ -77,13 +102,13 @@ export const AdminDashboardPage: React.FC = () => {
       totalClubs,
       activeClubs,
       inactiveClubs,
-      totalListings: activeResources.length,
+      totalListings,
       totalUnits,
       totalBorrowing,
       pendingRequests,
       completedRequests,
     };
-  }, [clubs, resources, requests]);
+  }, [clubs, resources, requests, remoteStats]);
 
   const filteredRequests = useMemo(() => {
     return requests.filter((req) => {

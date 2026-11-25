@@ -25,7 +25,6 @@ import {
   useApp,
 } from '../../context/AppContext';
 import { IMAGES } from '../../data/seedData';
-import { fetchClubById } from '../../services/resources';
 import type { ClubEvent, Resource, ResourceCategory } from '../../types/eventpool';
 
 const CATEGORY_DEFAULT_IMAGE: Record<ResourceCategory, string> = {
@@ -44,6 +43,7 @@ export const MyClubPage: React.FC = () => {
     requests,
     navigate,
     getClubById,
+    fetchClubById,
     getResourceById,
     approveBorrowRequest,
     rejectBorrowRequest,
@@ -60,20 +60,44 @@ export const MyClubPage: React.FC = () => {
     updateEvent,
     deleteEvent,
     updateOwnClubProfile,
-    cacheRemoteData,
   } = useApp();
 
-  const club = getClubById(currentUser?.clubId || 'club-pekom');
-
   useEffect(() => {
-    if (currentUser?.role === 'club_rep' && currentUser.clubId && !club) {
-      fetchClubById(currentUser.clubId)
-        .then((fetched) => cacheRemoteData({ clubs: [fetched] }))
-        .catch(() => {});
+    if (currentUser?.clubId) {
+      fetchClubById(currentUser.clubId);
     }
-  }, [currentUser?.role, currentUser?.clubId, club, cacheRemoteData]);
+  }, [currentUser?.clubId, fetchClubById]);
+
+  const resolvedClub =
+    getClubById(currentUser?.clubId) ||
+    (currentUser?.role === 'club_rep' && currentUser.clubId
+      ? {
+          id: currentUser.clubId,
+          name: currentUser.name || 'Student Club',
+          acronym: currentUser.name
+            ? currentUser.name
+                .split(' ')
+                .map((w) => w[0])
+                .join('')
+                .slice(0, 5)
+                .toUpperCase()
+            : 'CLUB',
+          categoryFocus: 'Student Activity',
+          description: 'Official Universiti Malaya student club profile.',
+          storageLocation: 'UM Campus',
+          contactEmail: currentUser.email,
+          picPhone: '+60 12-345 6789',
+          representativeName: currentUser.name,
+          representativeEmail: currentUser.email,
+          password: '',
+          status: 'Active' as const,
+          createdAt: new Date().toISOString().slice(0, 10),
+        }
+      : undefined);
+
+  const club = resolvedClub;
   const isOwnRep =
-    currentUser?.role === 'club_rep' && currentUser.clubId === club?.id;
+    currentUser?.role === 'club_rep' && (currentUser.clubId === club?.id || !currentUser.clubId);
 
   // Subtabs under MyClub: Operations | Events | Club Profile
   const [activeSubtab, setActiveSubtab] = useState<
@@ -280,11 +304,11 @@ export const MyClubPage: React.FC = () => {
     );
   }
 
-  const handleVerifySubmit = (e: React.FormEvent) => {
+  const handleVerifySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeReturnItem) return;
     setVerifyError('');
-    const result = confirmReturnVerification(activeReturnItem.id, {
+    const result = await confirmReturnVerification(activeReturnItem.id, {
       reusable: reusableCount,
       damaged: damagedCount,
       missing: missingCount,
@@ -531,6 +555,17 @@ export const MyClubPage: React.FC = () => {
 
   const displayedDirectionalRequests =
     requestDirectionTab === 'incoming' ? incomingRequests : outgoingRequests;
+
+  if (!club) {
+    return (
+      <div className="max-w-[1380px] mx-auto px-4 sm:px-6 py-20 text-center space-y-4">
+        <h2 className="text-2xl font-bold text-[#1F3626]">Club Profile Not Available</h2>
+        <p className="text-sm text-[#4A554E] max-w-md mx-auto">
+          We could not locate an active club profile linked to this account. Please verify with your system administrator or try logging in again.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-[1380px] mx-auto px-4 sm:px-6 py-8 space-y-6">

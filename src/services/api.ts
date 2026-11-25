@@ -1,10 +1,9 @@
 /**
- * EventPool API Service
- * Connects the React Frontend to the Express / Firebase Backend
+ * EventPool API Client
+ * Connects the frontend to the Express/Firebase backend API (/api)
  */
 
-const FIREBASE_WEB_API_KEY = import.meta.env?.VITE_FIREBASE_WEB_API_KEY || '';
-
+const API_BASE = '/api';
 const API_BASE_URL = (import.meta.env?.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
 function buildApiUrl(endpoint: string): string {
@@ -12,47 +11,6 @@ function buildApiUrl(endpoint: string): string {
   return `${API_BASE_URL}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
 }
 
-export const TOKEN_STORAGE_KEY = 'eventpool_auth_token';
-
-/** Error carrying the HTTP status and machine-readable code (e.g. ACCOUNT_DISABLED, USER_DISABLED). */
-export class ApiError extends Error {
-  status: number;
-  code: string;
-
-  constructor(message: string, status = 0, code = 'UNKNOWN') {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.code = code;
-  }
-}
-
-export function getAuthToken(): string | null {
-  try {
-    return localStorage.getItem(TOKEN_STORAGE_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function clearAuthToken(): void {
-  try {
-    localStorage.removeItem(TOKEN_STORAGE_KEY);
-  } catch {
-    // Storage unavailable - nothing to clear
-  }
-}
-
-let unauthorizedHandler: ((reason: 'expired' | 'disabled') => void) | null = null;
-
-/** Registered by the app so an expired/invalid token on any API call signs the user out. */
-export function setUnauthorizedHandler(handler: ((reason: 'expired' | 'disabled') => void) | null): void {
-  unauthorizedHandler = handler;
-}
-
-/**
- * Check if the Express backend server is alive and responding
- */
 export async function checkBackendHealth(): Promise<{ ok: boolean; status?: string }> {
   try {
     const res = await fetch(buildApiUrl('/api/health'));
@@ -64,225 +22,520 @@ export async function checkBackendHealth(): Promise<{ ok: boolean; status?: stri
   }
 }
 
-/**
- * Exchange email & password for a real Firebase ID token via REST API
- */
-export async function loginWithFirebaseAuth(email: string, password: string): Promise<string> {
-  if (!FIREBASE_WEB_API_KEY) {
-    throw new ApiError('Firebase Web API key is not configured (VITE_FIREBASE_WEB_API_KEY).', 0, 'CONFIG_ERROR');
-  }
-  const res = await fetch(
-    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${FIREBASE_WEB_API_KEY}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, password, returnSecureToken: true }),
-    }
-  );
+const AUTH_TOKEN_KEY = 'eventpool_jwt_token';
+const FIREBASE_WEB_API_KEY = import.meta.env?.VITE_FIREBASE_WEB_API_KEY || '';
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    // Firebase codes look like "INVALID_LOGIN_CREDENTIALS" or "TOO_MANY_ATTEMPTS_TRY_LATER : Access to this account..."
-    const code = String(data.error?.message || 'AUTH_FAILED').split(' ')[0];
-    throw new ApiError('Authentication with Firebase failed.', res.status, code);
-  }
+export type UnauthorizedReason = 'expired' | 'disabled';
+type UnauthorizedHandler = (reason: UnauthorizedReason) => void;
 
-  const token = data.idToken as string;
-  try {
-    localStorage.setItem(TOKEN_STORAGE_KEY, token);
-  } catch {
-    // Storage unavailable - session will not survive a reload
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string,
+    message: string
+  ) {
+    super(message);
+    this.name = 'ApiError';
   }
-  return token;
 }
 
-/**
- * Generic authenticated API fetch wrapper
- */
-export async function apiRequest<T = any>(
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
+interface ApiErrorResponse {
+  success?: boolean;
+  message?: string;
+  error?: { code?: string };
+}
+
+export async function apiRequest<T = unknown>(
   endpoint: string,
   options: RequestInit = {}
 ): Promise<T> {
+  const rawUrl = endpoint.startsWith('/api/')
+    ? endpoint
+    : `${API_BASE}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`;
+  const url = buildApiUrl(rawUrl);
+  const headers = new Headers(options.headers);
+
   const token = getAuthToken();
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    ...((options.headers as Record<string, string>) || {}),
-  };
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  if (options.body && !(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
 
   let response: Response;
   try {
-    response = await fetch(buildApiUrl(endpoint), { ...options, headers });
+    response = await fetch(url, { ...options, headers });
   } catch {
-    throw new ApiError('Cannot reach the EventPool server.', 0, 'NETWORK_ERROR');
+    throw new ApiError(0, 'NETWORK_ERROR', 'Cannot reach the EventPool server.');
   }
 
-  const body = await response.json().catch(() => ({}));
+  let body: ApiResponse<T> | ApiErrorResponse | null = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
 
-  if (!response.ok) {
-    const errorCode = body?.error?.code;
-    if (token && (response.status === 401 || errorCode === 'ACCOUNT_DISABLED')) {
+  if (!response.ok || body?.success === false) {
+    const errorBody = body as ApiErrorResponse | null;
+    const code = errorBody?.error?.code || `HTTP_${response.status}`;
+    const message = errorBody?.message || response.statusText || 'API request failed.';
+
+    if (response.status === 401 || code === 'UNAUTHORIZED') {
       clearAuthToken();
-      unauthorizedHandler?.(errorCode === 'ACCOUNT_DISABLED' ? 'disabled' : 'expired');
+      unauthorizedHandler?.('expired');
+    } else if (code === 'ACCOUNT_DISABLED') {
+      clearAuthToken();
+      unauthorizedHandler?.('disabled');
     }
-    const message =
-      body?.message ||
-      (typeof body?.error === 'string' ? body.error : undefined) ||
-      `Request failed with status ${response.status}`;
-    throw new ApiError(message, response.status, body?.error?.code || 'REQUEST_FAILED');
+
+    throw new ApiError(response.status, code, message);
   }
 
-  return body.data;
+  const successBody = body as ApiResponse<T> | null;
+  if (successBody && 'data' in successBody) {
+    return successBody.data as T;
+  }
+  return successBody as unknown as T;
 }
 
-// ── Resource APIs ─────────────────────────────────────────────────────────────
-
-export async function fetchResourcesApi() {
-  return apiRequest('/api/resources');
+export function getAuthToken(): string | null {
+  return localStorage.getItem(AUTH_TOKEN_KEY);
 }
 
-export async function createResourceApi(input: {
-  itemName: string;
-  category: string;
-  totalQuantity: number;
-  condition: string;
-  location: string;
-  remarks?: string;
-  estimatedUnitCost?: number;
-  estimatedWeight?: number;
-}) {
-  return apiRequest('/api/resources', {
-    method: 'POST',
-    body: JSON.stringify(input),
-  });
+export function setAuthToken(token: string | null): void {
+  if (token) localStorage.setItem(AUTH_TOKEN_KEY, token);
+  else localStorage.removeItem(AUTH_TOKEN_KEY);
 }
 
-export async function updateResourceApi(resourceId: string, updates: Record<string, any>) {
-  return apiRequest(`/api/resources/${resourceId}`, {
-    method: 'PATCH',
-    body: JSON.stringify(updates),
-  });
-}
-
-export async function archiveResourceApi(resourceId: string) {
-  return apiRequest(`/api/resources/${resourceId}/archive`, {
-    method: 'PATCH',
-  });
-}
-
-export async function toggleAvailabilityApi(resourceId: string, manualUnavailable: boolean) {
-  return apiRequest(`/api/resources/${resourceId}/availability`, {
-    method: 'PATCH',
-    body: JSON.stringify({ manualUnavailable }),
-  });
-}
-
-// ── Club & Profile APIs ────────────────────────────────────────────────────────
-
-export async function fetchClubsApi() {
-  return apiRequest('/api/clubs');
-}
-
-export async function fetchClubByIdApi(clubId: string) {
-  return apiRequest(`/api/clubs/${clubId}`);
-}
-
-export async function updateClubProfileApi(clubId: string, updates: Record<string, any>) {
-  return apiRequest(`/api/clubs/${clubId}`, {
-    method: 'PATCH',
-    body: JSON.stringify(updates),
-  });
+export function clearAuthToken(): void {
+  setAuthToken(null);
 }
 
 export type AuthProfile =
-  | { accountType: 'club'; clubId: string; clubName: string; email: string }
-  | { accountType: 'admin'; adminId: string; adminName: string; email: string };
+  | {
+      accountType: 'admin';
+      adminId: string;
+      adminName: string;
+      email: string;
+    }
+  | {
+      accountType: 'club';
+      clubId: string;
+      clubName: string;
+      email: string;
+    };
+
+export async function loginWithFirebaseAuth(email: string, password: string): Promise<void> {
+  if (!FIREBASE_WEB_API_KEY) {
+    throw new ApiError(
+      0,
+      'FIREBASE_CONFIG_MISSING',
+      'Firebase web API key is not configured. Set VITE_FIREBASE_WEB_API_KEY.'
+    );
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${encodeURIComponent(FIREBASE_WEB_API_KEY)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      }
+    );
+  } catch {
+    throw new ApiError(0, 'NETWORK_ERROR', 'Cannot reach the sign-in service.');
+  }
+
+  const body = await response.json().catch(() => null) as
+    | { idToken?: string; error?: { message?: string } }
+    | null;
+
+  if (!response.ok || !body?.idToken) {
+    const code = body?.error?.message || `HTTP_${response.status}`;
+    throw new ApiError(response.status, code, 'Firebase authentication failed.');
+  }
+
+  setAuthToken(body.idToken);
+}
 
 export async function fetchAuthProfileApi(): Promise<AuthProfile> {
   return apiRequest<AuthProfile>('/api/auth/profile');
 }
 
-// ── Event APIs ────────────────────────────────────────────────────────────────
-
-export async function fetchEventsApi() {
-  return apiRequest('/api/events');
+export interface ApiResponse<T = any> {
+  success: boolean;
+  message: string;
+  data?: T;
+  error?: {
+    code: string;
+  };
 }
 
-export async function createEventApi(input: {
-  name: string;
-  date: string;
-  purpose: string;
-  description?: string;
-}) {
-  return apiRequest('/api/events', {
-    method: 'POST',
-    body: JSON.stringify({
-      eventName: input.name,
-      eventDate: input.date,
-      purpose: input.purpose,
-      description: input.description,
-    }),
-  });
-}
+class ApiService {
+  private token: string | null = null;
 
-export async function updateEventApi(
-  eventId: string,
-  input: {
-    name?: string;
-    date?: string;
-    purpose?: string;
-    description?: string;
+  constructor() {
+    this.token = localStorage.getItem('eventpool_jwt_token') || null;
   }
-) {
-  return apiRequest(`/api/events/${eventId}`, {
-    method: 'PATCH',
-    body: JSON.stringify({
-      ...(input.name ? { eventName: input.name } : {}),
-      ...(input.date ? { eventDate: input.date } : {}),
-      ...(input.purpose ? { purpose: input.purpose } : {}),
-      ...(input.description !== undefined ? { description: input.description } : {}),
-    }),
-  });
+
+  setToken(token: string | null) {
+    this.token = token;
+    if (token) {
+      localStorage.setItem('eventpool_jwt_token', token);
+    } else {
+      localStorage.removeItem('eventpool_jwt_token');
+    }
+  }
+
+  getToken(): string | null {
+    return this.token || localStorage.getItem('eventpool_jwt_token');
+  }
+
+  private async request<T = unknown>(
+    endpoint: string,
+    options: RequestInit = {}
+  ): Promise<ApiResponse<T>> {
+    const url = buildApiUrl(`${API_BASE}${endpoint.startsWith('/') ? endpoint : `/${endpoint}`}`);
+    const headers: Record<string, string> = {
+      ...(options.headers as Record<string, string>),
+    };
+
+    const token = this.getToken();
+    if (token && !headers['Authorization']) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    if (!(options.body instanceof FormData) && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    try {
+      const response = await fetch(url, {
+        ...options,
+        headers,
+      });
+
+      const json = await response.json().catch(() => ({
+        success: false,
+        message: response.statusText,
+        error: { code: 'HTTP_' + response.status },
+      }));
+
+      return json;
+    } catch (err: any) {
+      return {
+        success: false,
+        message: err.message || 'Network request failed',
+        error: { code: 'NETWORK_ERROR' },
+      };
+    }
+  }
+
+  // Health check
+  async health() {
+    return this.request<{ status: string; timestamp: string }>('/health');
+  }
+
+  // Auth Endpoints (BE-01)
+  auth = {
+    getProfile: () => this.request<any>('/auth/profile'),
+  };
+
+  // Admin Endpoints (BE-05)
+  admin = {
+    getProfile: () => this.request<any>('/admin/profile'),
+    createClub: (data: {
+      clubName: string;
+      description?: string;
+      contactEmail: string;
+      picContactNum: string;
+      password: string;
+    }) =>
+      this.request<{
+        clubId: string;
+        clubName: string;
+        contactEmail: string;
+        isActive: boolean;
+      }>('/admin/clubs', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    deactivateClub: (clubId: string) =>
+      this.request<{ clubId: string; isActive: boolean }>(
+        `/admin/clubs/${clubId}/deactivate`,
+        { method: 'PATCH' }
+      ),
+    getDashboard: () =>
+      this.request<{
+        totalClubs: number;
+        activeClubs: number;
+        totalResources: number;
+        totalBorrowingRequests: number;
+        pendingRequests: number;
+        completedRequests: number;
+      }>('/admin/dashboard'),
+  };
+
+  // Club Endpoints (BE-04)
+  clubs = {
+    getAll: () =>
+      this.request<
+        Array<{
+          clubId: string;
+          clubName: string;
+          description: string;
+          contactEmail: string;
+          picContactNum: string;
+          isActive: boolean;
+        }>
+      >('/clubs'),
+    getById: (clubId: string) =>
+      this.request<{
+        clubId: string;
+        clubName: string;
+        description: string;
+        contactEmail: string;
+        picContactNum: string;
+        createdAt: string;
+        isActive: boolean;
+      }>(`/clubs/${clubId}`),
+    update: (
+      clubId: string,
+      data: {
+        clubName?: string;
+        description?: string;
+        contactEmail?: string;
+        picContactNum?: string;
+      }
+    ) =>
+      this.request<{
+        clubId: string;
+        clubName: string;
+        contactEmail: string;
+      }>(`/clubs/${clubId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+  };
+
+  // Event Endpoints (BE-04)
+  events = {
+    getAll: (params?: { clubId?: string; eventDate?: string }) => {
+      const q = new URLSearchParams(params as any).toString();
+      return this.request<
+        Array<{
+          eventId: string;
+          clubId: string;
+          eventName: string;
+          eventDate: string;
+          purpose: string;
+          description: string;
+          createdAt: string;
+        }>
+      >(`/events${q ? `?${q}` : ''}`);
+    },
+    create: (data: {
+      eventName: string;
+      eventDate: string;
+      purpose: string;
+      description?: string;
+    }) =>
+      this.request<{
+        eventId: string;
+        clubId: string;
+        eventName: string;
+        eventDate: string;
+        purpose: string;
+      }>('/events', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+  };
+
+  // Resource Endpoints (BE-02 & BE-03)
+  resources = {
+    getAll: (params?: {
+      category?: string;
+      status?: string;
+      clubId?: string;
+      location?: string;
+      page?: number;
+      limit?: number;
+    }) => {
+      const q = new URLSearchParams(params as any).toString();
+      return this.request<{
+        items: any[];
+        pagination: { page: number; limit: number; total: number; totalPages: number };
+      }>(`/resources${q ? `?${q}` : ''}`);
+    },
+    search: (params?: {
+      q?: string;
+      category?: string;
+      status?: string;
+      clubId?: string;
+      location?: string;
+      page?: number;
+      limit?: number;
+    }) => {
+      const qs = new URLSearchParams(params as any).toString();
+      return this.request<{
+        items: any[];
+        pagination: { page: number; limit: number; total: number; totalPages: number };
+      }>(`/resources/search${qs ? `?${qs}` : ''}`);
+    },
+    getById: (resourceId: string) => this.request<any>(`/resources/${resourceId}`),
+    create: (data: {
+      itemName: string;
+      category: string;
+      description?: string;
+      totalQuantity: number;
+      condition?: string;
+      location?: string;
+      remarks?: string;
+      estimatedUnitCost?: number;
+      estimatedUnitWeight?: number;
+    }) =>
+      this.request<any>('/resources', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    update: (
+      resourceId: string,
+      data: {
+        itemName?: string;
+        category?: string;
+        description?: string;
+        totalQuantity?: number;
+        condition?: string;
+        location?: string;
+        remarks?: string;
+        estimatedUnitCost?: number;
+        estimatedUnitWeight?: number;
+      }
+    ) =>
+      this.request<any>(`/resources/${resourceId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    archive: (resourceId: string) =>
+      this.request<{ resourceId: string; isArchived: boolean }>(
+        `/resources/${resourceId}/archive`,
+        { method: 'PATCH' }
+      ),
+    updateAvailability: (
+      resourceId: string,
+      data: { isTemporarilyUnavailable: boolean; remarks?: string }
+    ) =>
+      this.request<any>(`/resources/${resourceId}/availability`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    uploadImage: (resourceId: string, file: File | Blob) => {
+      const formData = new FormData();
+      formData.append('image', file);
+      return this.request<{ resourceId: string; imageURL: string }>(
+        `/resources/${resourceId}/image`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+    },
+    getImage: (resourceId: string) =>
+      this.request<{ resourceId: string; imageURL: string }>(
+        `/resources/${resourceId}/image`
+      ),
+    deleteImage: (resourceId: string) =>
+      this.request<{ resourceId: string; imageURL: null }>(
+        `/resources/${resourceId}/image`,
+        { method: 'DELETE' }
+      ),
+  };
+
+  // Borrowing Request Endpoints (BE-06 to BE-10)
+  borrowing = {
+    getAll: (params?: {
+      status?: string;
+      resourceId?: string;
+      page?: number;
+      limit?: number;
+    }) => {
+      const q = new URLSearchParams(params as any).toString();
+      return this.request<{
+        requests?: any[];
+        items?: any[];
+        pagination: { page: number; limit: number; total: number; totalPages: number };
+      }>(`/borrowing-requests${q ? `?${q}` : ''}`);
+    },
+    getById: (requestId: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}`),
+    submit: (data: {
+      resourceId: string;
+      eventId: string;
+      quantity: number;
+      purpose: string;
+      pickupDate: string;
+      expectedReturnDate: string;
+      wouldHavePurchased: boolean;
+      remarks?: string;
+    }) =>
+      this.request<any>('/borrowing-requests', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      }),
+    approve: (requestId: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/approve`, {
+        method: 'PATCH',
+      }),
+    reject: (requestId: string, remarks?: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/reject`, {
+        method: 'PATCH',
+        body: JSON.stringify({ remarks: remarks || '' }),
+      }),
+    cancel: (requestId: string, reason?: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/cancel`, {
+        method: 'PATCH',
+        body: JSON.stringify({ reason: reason || 'Cancelled by club' }),
+      }),
+    markBorrowed: (requestId: string) =>
+      this.request<any>(`/borrowing-requests/${requestId}/borrow`, {
+        method: 'PATCH',
+      }),
+    submitReturn: (
+      requestId: string,
+      data: { actualReturnDate: string; remarks?: string }
+    ) =>
+      this.request<any>(`/borrowing-requests/${requestId}/return`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+    complete: (
+      requestId: string,
+      data: {
+        returnedQuantity: number;
+        usableQuantity: number;
+        damagedQuantity: number;
+        missingQuantity: number;
+        returnCondition?: string;
+        remarks?: string;
+      }
+    ) =>
+      this.request<any>(`/borrowing-requests/${requestId}/complete`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      }),
+  };
 }
 
-// ── Borrowing Request APIs (FE-06) ──────────────────────────────────────────
-
-export async function fetchBorrowRequestsApi() {
-  return apiRequest('/api/borrowing-requests');
-}
-
-export async function approveBorrowRequestApi(requestId: string) {
-  return apiRequest(`/api/borrowing-requests/${requestId}/approve`, {
-    method: 'PATCH',
-  });
-}
-
-export async function rejectBorrowRequestApi(requestId: string, reason?: string) {
-  return apiRequest(`/api/borrowing-requests/${requestId}/reject`, {
-    method: 'PATCH',
-    body: JSON.stringify({ reason }),
-  });
-}
-
-export async function markBorrowedApi(requestId: string) {
-  return apiRequest(`/api/borrowing-requests/${requestId}/borrow`, {
-    method: 'PATCH',
-  });
-}
-
-export async function cancelBorrowRequestApi(requestId: string) {
-  return apiRequest(`/api/borrowing-requests/${requestId}/cancel`, {
-    method: 'PATCH',
-  });
-}
-
-// ── Admin & Sustainability APIs (FE-08) ────────────────────────────────────
-
-export async function fetchAdminDashboardApi() {
-  return apiRequest('/api/admin/dashboard');
-}
-
-export async function fetchSustainabilityApi(params?: { clubId?: string; period?: string }) {
-  const query = new URLSearchParams(params as Record<string, string>).toString();
-  return apiRequest(`/api/sustainability${query ? `?${query}` : ''}`);
-}
+export const api = new ApiService();
+export default api;

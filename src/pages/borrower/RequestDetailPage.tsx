@@ -127,11 +127,11 @@ export const RequestDetailPage: React.FC = () => {
   const overdue = activeRequest ? isRequestOverdue(activeRequest) : false;
   const overdueDays = activeRequest ? getOverdueDays(activeRequest) : 0;
 
-  const handleVerifySubmit = (e: React.FormEvent) => {
+  const handleVerifySubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeRequest) return;
     setVerifyError('');
-    const result = confirmReturnVerification(activeRequest.id, {
+    const result = await confirmReturnVerification(activeRequest.id, {
       reusable: reusableCount,
       damaged: damagedCount,
       missing: missingCount,

@@ -1,9 +1,11 @@
+
 import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import app from '../src/server.js';
 import { auth, db } from '../src/config/firebase.js';
 import dotenv from 'dotenv';
+import { calculateResourceStatus } from '../src/utils/resourceStatus.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -12,444 +14,1378 @@ dotenv.config({ path: path.resolve(__dirname, '../.env') });
 dotenv.config();
 
 const API_KEY = process.env.FIREBASE_WEB_API_KEY || 'AIzaSyCuxj4pY_b0wDq298coBMXtVm-FdDrLRuQ';
-const TEST_PORT = 5056;
+const TEST_PORT = 5055;
 const BASE_URL = `http://localhost:${TEST_PORT}/api`;
 
 let passedCount = 0;
 let failedCount = 0;
 
+const timestamp = Date.now();
+const testPrefix = `TEST_BORROWING_${timestamp}`;
+
 function assert(condition, testName, details = '') {
   if (condition) {
-    console.log(`  \x1b[32m[PASS]\x1b[0m ${testName}`);
+    console.log(`  [PASS] ${testName}`);
     passedCount++;
   } else {
-    console.error(`  \x1b[31m[FAIL]\x1b[0m ${testName} ${details ? `(${details})` : ''}`);
+    console.error(`  [FAIL] ${testName} ${details ? `(${details})` : ''}`);
     failedCount++;
   }
 }
 
 async function getIdTokenForUid(uid) {
   const customToken = await auth.createCustomToken(uid);
-  const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${API_KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: customToken, returnSecureToken: true })
-  });
+
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithCustomToken?key=${API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        token: customToken,
+        returnSecureToken: true
+      })
+    }
+  );
+
   const data = await res.json();
+
   if (!data.idToken) {
-    throw new Error(`Token exchange failed for ${uid}: ${JSON.stringify(data)}`);
+    throw new Error(`Admin token exchange failed: ${JSON.stringify(data)}`);
   }
+
+  return data.idToken;
+}
+
+async function getIdTokenWithPassword(email, password) {
+  const res = await fetch(
+    `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email,
+        password,
+        returnSecureToken: true
+      })
+    }
+  );
+
+  const data = await res.json();
+
+  if (!data.idToken) {
+    throw new Error(`Club login failed: ${JSON.stringify(data)}`);
+  }
+
   return data.idToken;
 }
 
 async function runTests() {
-  console.log('\n============================================================');
-  console.log('    EventPool Borrowing Lifecycle & Access Control Tests    ');
-  console.log('============================================================\n');
+  console.log('\n==============================================');
+  console.log(' BORROWING REQUEST TEST - BE-06 TO BE-10');
+  console.log('==============================================\n');
+
+  if (!API_KEY) {
+    throw new Error('FIREBASE_WEB_API_KEY is missing from .env');
+  }
 
   const server = http.createServer(app);
-  await new Promise((resolve) => server.listen(TEST_PORT, resolve));
 
-  // Tracking arrays for guaranteed teardown cleanup
-  const createdRequestIds = [];
-  const createdResourceIds = [];
-  const createdEventIds = [];
-  const createdClubIds = [];
-  const createdAuthUids = [];
+  await new Promise((resolve) => {
+    server.listen(TEST_PORT, resolve);
+  });
+
+  console.log(`[TEST RUNNER] Server started at ${BASE_URL}`);
+  console.log(`[TEST RUNNER] Test prefix: ${testPrefix}\n`);
 
   try {
-    const ts = Date.now();
 
-    // Setup temporary Owner, Borrower, and Third-Party Clubs
-    const ownerAuth = await auth.createUser({
-      email: `test_owner_${ts}@eventpool.test`,
-      password: 'Password123!',
-      displayName: 'Test Owner Club'
-    });
-    createdAuthUids.push(ownerAuth.uid);
+    // BE-09: Direct Resource Status Helper Tests
+    console.log('--- BE-09 Resource Status Helper Tests ---');
 
-    const borrowerAuth = await auth.createUser({
-      email: `test_borrower_${ts}@eventpool.test`,
-      password: 'Password123!',
-      displayName: 'Test Borrower Club'
-    });
-    createdAuthUids.push(borrowerAuth.uid);
+    assert(
+      calculateResourceStatus({
+        availableQuantity: 5,
+        reservedQuantity: 2,
+        borrowedQuantity: 1,
+        isTemporarilyUnavailable: false
+      }) === 'Available',
+      'Resource status is Available when available quantity is positive'
+    );
 
-    const thirdAuth = await auth.createUser({
-      email: `test_third_${ts}@eventpool.test`,
-      password: 'Password123!',
-      displayName: 'Test Third Club'
-    });
-    createdAuthUids.push(thirdAuth.uid);
+    assert(
+      calculateResourceStatus({
+        availableQuantity: 0,
+        reservedQuantity: 2,
+        borrowedQuantity: 1,
+        isTemporarilyUnavailable: false
+      }) === 'Reserved',
+      'Resource status is Reserved when only reserved and borrowed quantities remain'
+    );
 
-    const ownerClubId = `test-owner-${ts}`;
-    const borrowerClubId = `test-borrower-${ts}`;
-    const thirdClubId = `test-third-${ts}`;
-    createdClubIds.push(ownerClubId, borrowerClubId, thirdClubId);
+    assert(
+      calculateResourceStatus({
+        availableQuantity: 0,
+        reservedQuantity: 0,
+        borrowedQuantity: 2,
+        isTemporarilyUnavailable: false
+      }) === 'Borrowed',
+      'Resource status is Borrowed when all available units are borrowed'
+    );
 
-    const now = new Date().toISOString();
-    await db.collection('Clubs').doc(ownerClubId).set({
-      clubId: ownerClubId,
-      clubName: 'Test Owner Society',
-      contactEmail: ownerAuth.email,
-      authUId: ownerAuth.uid,
-      authUid: ownerAuth.uid,
-      isActive: true,
-      createdAt: now
-    });
-    await db.collection('Clubs').doc(borrowerClubId).set({
-      clubId: borrowerClubId,
-      clubName: 'Test Borrower Society',
-      contactEmail: borrowerAuth.email,
-      authUId: borrowerAuth.uid,
-      authUid: borrowerAuth.uid,
-      isActive: true,
-      createdAt: now
-    });
-    await db.collection('Clubs').doc(thirdClubId).set({
-      clubId: thirdClubId,
-      clubName: 'Test Third Society',
-      contactEmail: thirdAuth.email,
-      authUId: thirdAuth.uid,
-      authUid: thirdAuth.uid,
-      isActive: true,
-      createdAt: now
-    });
+    assert(
+      calculateResourceStatus({
+        availableQuantity: 5,
+        reservedQuantity: 0,
+        borrowedQuantity: 0,
+        isTemporarilyUnavailable: true
+      }) === 'Unavailable',
+      'Temporarily unavailable overrides inventory status'
+    );
 
-    const ownerToken = await getIdTokenForUid(ownerAuth.uid);
-    const borrowerToken = await getIdTokenForUid(borrowerAuth.uid);
-    const thirdToken = await getIdTokenForUid(thirdAuth.uid);
+        let zeroInventoryThrows = false;
 
-    // 1. BUG-003 Option A: Verify Public Read Endpoints & Auth Boundaries
-    console.log('--- Step 1: Public Read Access (BUG-003 Option A) & Auth Guard ---');
-    const pubResources = await fetch(`${BASE_URL}/resources`);
-    assert(pubResources.status === 200, 'Anonymous GET /api/resources returns 200 OK');
+    try {
+      calculateResourceStatus({
+        availableQuantity: 0,
+        reservedQuantity: 0,
+        borrowedQuantity: 0,
+        isTemporarilyUnavailable: false
+      });
+    } catch {
+      zeroInventoryThrows = true;
+    }
 
-    const pubSearch = await fetch(`${BASE_URL}/resources/search?q=Projector`);
-    assert(pubSearch.status === 200, 'Anonymous GET /api/resources/search returns 200 OK');
+    assert(
+      zeroInventoryThrows,
+      'Zero inventory without temporary unavailability throws an error'
+    );
 
-    const pubClubs = await fetch(`${BASE_URL}/clubs`);
-    assert(pubClubs.status === 200, 'Anonymous GET /api/clubs returns 200 OK');
+    // Step 1: Get Admin token
+    console.log('--- Step 1: Admin Authentication ---');
 
-    const pubMetrics = await fetch(`${BASE_URL}/sustainability`);
-    assert(pubMetrics.status === 200, 'Anonymous GET /api/sustainability returns 200 OK');
+    const adminsSnap = await db.collection('Admins').limit(1).get();
 
-    const anonBorrow = await fetch(`${BASE_URL}/borrowing-requests`, { method: 'POST', body: '{}' });
-    assert(anonBorrow.status === 401, 'Anonymous POST /api/borrowing-requests blocked with 401');
+    if (adminsSnap.empty) {
+      throw new Error('No Admin document found');
+    }
 
-    // 2. Seed Resource & Event for Tests
-    const resCreate = await fetch(`${BASE_URL}/resources`, {
+    const adminDoc = adminsSnap.docs[0];
+    const adminUid = adminDoc.data().adminId || adminDoc.id;
+
+    const adminToken = await getIdTokenForUid(adminUid);
+
+    assert(Boolean(adminToken), 'Admin authentication successful');
+
+    // Step 2: Create Requester Club
+    console.log('\n--- Step 2: Create Requester Club ---');
+
+    const requesterEmail = `requester_${timestamp}@eventpool.test`;
+    const requesterPassword = 'Password123!';
+
+    const requesterRes = await fetch(`${BASE_URL}/admin/clubs`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
       body: JSON.stringify({
-        itemName: 'Test Wireless Mic Set',
-        category: 'Audio Equipment',
+        clubName: `${testPrefix}_REQUESTER`,
+        description: 'Temporary borrowing request test club',
+        contactEmail: requesterEmail,
+        picContactNum: '0112233445',
+        password: requesterPassword
+      })
+    });
+
+    const requesterBody = await requesterRes.json();
+
+    assert(
+      requesterRes.status === 201,
+      'Requester Club created',
+      JSON.stringify(requesterBody)
+    );
+
+    const requesterClubId = requesterBody.data?.clubId;
+
+    assert(Boolean(requesterClubId), 'Requester Club ID received');
+
+    // Step 3: Create Owner Club
+    console.log('\n--- Step 3: Create Owner Club ---');
+
+    const ownerEmail = `owner_${timestamp}@eventpool.test`;
+    const ownerPassword = 'Password123!';
+
+    const ownerRes = await fetch(`${BASE_URL}/admin/clubs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        clubName: `${testPrefix}_OWNER`,
+        description: 'Temporary resource owner test club',
+        contactEmail: ownerEmail,
+        picContactNum: '0119988776',
+        password: ownerPassword
+      })
+    });
+
+    const ownerBody = await ownerRes.json();
+
+    assert(
+      ownerRes.status === 201,
+      'Owner Club created',
+      JSON.stringify(ownerBody)
+    );
+
+    const ownerClubId = ownerBody.data?.clubId;
+
+    assert(Boolean(ownerClubId), 'Owner Club ID received');
+
+    // Step 4: Club Login
+    console.log('\n--- Step 4: Club Authentication ---');
+
+    const requesterToken = await getIdTokenWithPassword(
+      requesterEmail,
+      requesterPassword
+    );
+
+    const ownerToken = await getIdTokenWithPassword(
+      ownerEmail,
+      ownerPassword
+    );
+
+    assert(Boolean(requesterToken), 'Requester Club login successful');
+    assert(Boolean(ownerToken), 'Owner Club login successful');
+
+
+    // Step 5: Create Event under Requester Club
+    console.log('\n--- Step 5: Create Test Event ---');
+
+    const eventRes = await fetch(`${BASE_URL}/events`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${requesterToken}`
+      },
+      body: JSON.stringify({
+        eventName: `${testPrefix}_EVENT`,
+        eventDate: '2027-01-15',
+        purpose: 'Borrowing request integration test',
+        description: 'Temporary test event'
+      })
+    });
+
+    const eventBody = await eventRes.json();
+    const eventId = eventBody.data?.eventId;
+
+    assert(
+      eventRes.status === 201,
+      'Test Event created',
+      JSON.stringify(eventBody)
+    );
+
+    assert(Boolean(eventId), 'Event ID received');
+    assert(
+      eventBody.data?.clubId === requesterClubId,
+      'Event belongs to Requester Club'
+    );
+
+    // Step 6: Create Resource under Owner Club
+    console.log('\n--- Step 6: Create Test Resource ---');
+
+    const resourceRes = await fetch(`${BASE_URL}/resources`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${ownerToken}`
+      },
+      body: JSON.stringify({
+        itemName: `${testPrefix}_RESOURCE`,
+        category: 'Electronics',
+        description: 'Temporary borrowing request test resource',
         totalQuantity: 10,
         condition: 'Good',
-        location: 'Test Store',
-        estimatedUnitCost: 200,
-        estimatedUnitWeight: 1.5
+        location: 'Test Location',
+        estimatedUnitCost: 100,
+        estimatedUnitWeight: 1
       })
     });
-    const resBody = await resCreate.json();
-    const resourceId = resBody.data?.resourceId;
-    if (resourceId) createdResourceIds.push(resourceId);
-    assert(resCreate.status === 201 && Boolean(resourceId), 'Owner creates test resource (10 units)');
 
-    const pubSingleRes = await fetch(`${BASE_URL}/resources/${resourceId}`);
-    assert(pubSingleRes.status === 200, 'Anonymous GET /api/resources/:id returns 200 OK');
+    const resourceBody = await resourceRes.json();
+    const resourceId = resourceBody.data?.resourceId;
 
-    const evtCreate = await fetch(`${BASE_URL}/events`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
-      body: JSON.stringify({
-        eventName: 'Test Tech Forum',
-        eventDate: '2026-12-20',
-        purpose: 'Panel discussion'
-      })
-    });
-    const evtBody = await evtCreate.json();
-    const eventId = evtBody.data?.eventId;
-    if (eventId) createdEventIds.push(eventId);
-    assert(evtCreate.status === 201 && Boolean(eventId), 'Borrower creates test event');
-
-    // 3. Borrowing Creation Validations & Access Control
-    console.log('\n--- Step 2: Borrowing Request Validation & Access Control ---');
-    const selfBorrow = await fetch(`${BASE_URL}/borrowing-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
-      body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 2,
-        purpose: 'Self borrow test',
-        pickupDate: '2026-12-01',
-        expectedReturnDate: '2026-12-05',
-        wouldHavePurchased: true
-      })
-    });
-    assert(selfBorrow.status === 403, 'Owner blocked from borrowing own resource (403 FORBIDDEN)');
-
-    const overBorrow = await fetch(`${BASE_URL}/borrowing-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
-      body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 15,
-        purpose: 'Over-request test',
-        pickupDate: '2026-12-01',
-        expectedReturnDate: '2026-12-05',
-        wouldHavePurchased: true
-      })
-    });
-    assert(overBorrow.status === 409, 'Request exceeding available stock rejected (409 INSUFFICIENT_QUANTITY)');
-
-    const badDate = await fetch(`${BASE_URL}/borrowing-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
-      body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 2,
-        purpose: 'Invalid date range',
-        pickupDate: '2026-12-05',
-        expectedReturnDate: '2026-12-01',
-        wouldHavePurchased: true
-      })
-    });
-    assert(badDate.status === 400, 'Return date <= pickup date rejected (400 INVALID_DATE_RANGE)');
-
-    // 4. Full Lifecycle: Pending -> Approved -> Borrowed -> Return Pending -> Completed
-    console.log('\n--- Step 3: Lifecycle (Approve -> Borrow -> Initiate Return -> Verify) ---');
-    const req1Res = await fetch(`${BASE_URL}/borrowing-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
-      body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 4,
-        purpose: 'Keynote speakers audio',
-        pickupDate: '2026-12-10',
-        expectedReturnDate: '2026-12-14',
-        wouldHavePurchased: true
-      })
-    });
-    const req1Body = await req1Res.json();
-    const req1Id = req1Body.data?.requestId;
-    if (req1Id) createdRequestIds.push(req1Id);
-    assert(req1Res.status === 201 && req1Body.data?.status === 'Pending', 'Borrower creates request in Pending (4 units)');
-
-    // Access control: Third party cannot view; Borrower cannot approve
-    const thirdView = await fetch(`${BASE_URL}/borrowing-requests/${req1Id}`, {
-      headers: { Authorization: `Bearer ${thirdToken}` }
-    });
-    assert(thirdView.status === 403, 'Uninvolved third-party club blocked from viewing request (403)');
-
-    const borrowerApprove = await fetch(`${BASE_URL}/borrowing-requests/${req1Id}/approve`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${borrowerToken}` }
-    });
-    assert(borrowerApprove.status === 403, 'Borrower blocked from self-approving request (403)');
-
-    // Owner approves -> stock moves: avail 6, reserved 4
-    const approveRes = await fetch(`${BASE_URL}/borrowing-requests/${req1Id}/approve`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${ownerToken}` }
-    });
-    assert(approveRes.status === 200, 'Owner approves request (200 OK)');
-
-    const afterApprove = await (await fetch(`${BASE_URL}/resources/${resourceId}`)).json();
     assert(
-      afterApprove.data?.availableQuantity === 6 && afterApprove.data?.reservedQuantity === 4,
-      'Atomic transaction reserved 4 units (avail=6, reserved=4)'
+      resourceRes.status === 201,
+      'Test Resource created',
+      JSON.stringify(resourceBody)
     );
 
-    // Owner marks collected -> reserved 0, borrowed 4
-    const borrowRes = await fetch(`${BASE_URL}/borrowing-requests/${req1Id}/borrow`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${ownerToken}` }
-    });
-    assert(borrowRes.status === 200, 'Owner marks request Borrowed (200 OK)');
-
-    const afterBorrow = await (await fetch(`${BASE_URL}/resources/${resourceId}`)).json();
+    assert(Boolean(resourceId), 'Resource ID received');
     assert(
-      afterBorrow.data?.reservedQuantity === 0 && afterBorrow.data?.borrowedQuantity === 4,
-      'Atomic transaction moved 4 units to borrowed (reserved=0, borrowed=4)'
+      resourceBody.data?.status === 'Available',
+      'Initial resource status is Available'
+    );
+    assert(
+      resourceBody.data?.availableQuantity === 10,
+      'Initial available quantity is 10'
     );
 
-    // Borrower initiates return -> Return Pending
-    const initReturn = await fetch(`${BASE_URL}/borrowing-requests/${req1Id}/initiate-return`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${borrowerToken}` }
-    });
-    assert(initReturn.status === 200, 'Borrower initiates return (Return Pending)');
+    console.log('\n--- Test Event and Resource Created ---');
+    console.log(`Event ID: ${eventId}`);
+    console.log(`Resource ID: ${resourceId}`);
 
-    // Owner tries invalid return sum -> 400
-    const badReturn = await fetch(`${BASE_URL}/borrowing-requests/${req1Id}/return`, {
+
+    console.log('\n--- Test Environment Created ---');
+    console.log(`Requester Club ID: ${requesterClubId}`);
+    console.log(`Owner Club ID: ${ownerClubId}`);
+    console.log(`Test Prefix: ${testPrefix}`);
+
+
+    // Step 7: BE-06 Submit Borrowing Request
+    console.log('\n--- Step 7: BE-06 Submit Borrowing Request ---');
+
+    const requestPayload = {
+      resourceId,
+      eventId,
+      quantity: 3,
+      purpose: 'Borrowing resources for integration testing',
+      pickupDate: '2026-12-10T10:00:00.000Z',
+      expectedReturnDate: '2026-12-12T18:00:00.000Z',
+      wouldHavePurchased: false,
+      remarks: 'TEST_BORROWING request'
+    };
+
+    const submitRes = await fetch(`${BASE_URL}/borrowing-requests`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
-      body: JSON.stringify({ reusable: 2, damaged: 0, missing: 0 })
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${requesterToken}`
+      },
+      body: JSON.stringify(requestPayload)
     });
-    assert(badReturn.status === 400, 'Mismatched return inspection count rejected (400 INVALID_INPUT)');
 
-    // Owner verifies return: 3 reusable, 1 damaged -> total drops to 9, avail becomes 9
-    const verifyRes = await fetch(`${BASE_URL}/borrowing-requests/${req1Id}/return`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
-      body: JSON.stringify({ reusable: 3, damaged: 1, missing: 0 })
-    });
-    assert(verifyRes.status === 200, 'Owner verifies return (3 reusable, 1 damaged -> Completed)');
+    const submitBody = await submitRes.json();
+    const requestId = submitBody.data?.requestId;
 
-    const afterReturn = await (await fetch(`${BASE_URL}/resources/${resourceId}`)).json();
     assert(
-      afterReturn.data?.totalQuantity === 9 &&
-        afterReturn.data?.availableQuantity === 9 &&
-        afterReturn.data?.borrowedQuantity === 0,
-      'Return verification restored 3 reusable units and deducted 1 damaged unit (total=9, avail=9)'
+      submitRes.status === 201,
+      'Submit borrowing request returns 201',
+      JSON.stringify(submitBody)
     );
 
-    // 5. Cancel Flow & Stock Restoration
-    console.log('\n--- Step 4: Cancel Approved Request & Reject Pending Request ---');
-    const req2Res = await fetch(`${BASE_URL}/borrowing-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
-      body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 3,
-        purpose: 'Backup speakers',
-        pickupDate: '2026-12-10',
-        expectedReturnDate: '2026-12-14',
-        wouldHavePurchased: false
-      })
-    });
-    const req2Id = (await req2Res.json()).data?.requestId;
-    if (req2Id) createdRequestIds.push(req2Id);
+    assert(Boolean(requestId), 'Borrowing Request ID received');
 
-    await fetch(`${BASE_URL}/borrowing-requests/${req2Id}/approve`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${ownerToken}` }
-    });
-
-    const ownerCancel = await fetch(`${BASE_URL}/borrowing-requests/${req2Id}/cancel`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${ownerToken}` }
-    });
-    assert(ownerCancel.status === 403, 'Owner blocked from cancelling borrower request (403)');
-
-    const borrowerCancel = await fetch(`${BASE_URL}/borrowing-requests/${req2Id}/cancel`, {
-      method: 'PATCH',
-      headers: { Authorization: `Bearer ${borrowerToken}` }
-    });
-    assert(borrowerCancel.status === 200, 'Borrower cancels approved request (200 OK)');
-
-    const afterCancel = await (await fetch(`${BASE_URL}/resources/${resourceId}`)).json();
     assert(
-      afterCancel.data?.availableQuantity === 9 && afterCancel.data?.reservedQuantity === 0,
-      'Cancellation released reserved stock back to available (avail=9, reserved=0)'
+      submitBody.data?.status === 'Pending',
+      'New request status is Pending'
     );
 
-    // Reject flow
-    const req3Res = await fetch(`${BASE_URL}/borrowing-requests`, {
+    // Verify inventory is unchanged after submission
+    const resourceAfterSubmit = await db
+      .collection('Resources')
+      .doc(resourceId)
+      .get();
+
+    const inventoryAfterSubmit = resourceAfterSubmit.data();
+
+    assert(
+      inventoryAfterSubmit.availableQuantity === 10,
+      'Available quantity remains 10 after submission'
+    );
+
+    assert(
+      inventoryAfterSubmit.reservedQuantity === 0,
+      'Reserved quantity remains 0 after submission'
+    );
+
+    assert(
+      inventoryAfterSubmit.borrowedQuantity === 0,
+      'Borrowed quantity remains 0 after submission'
+    );
+
+    // Verify invalid quantity is rejected
+    const invalidSubmitRes = await fetch(
+      `${BASE_URL}/borrowing-requests`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${requesterToken}`
+        },
+        body: JSON.stringify({
+          ...requestPayload,
+          quantity: 0
+        })
+      }
+    );
+
+    const invalidSubmitBody = await invalidSubmitRes.json();
+
+    assert(
+      invalidSubmitRes.status === 400,
+      'Reject borrowing request with quantity 0',
+      JSON.stringify(invalidSubmitBody)
+    );
+
+    // Verify requester cannot borrow its own resource
+    const ownResourceRes = await fetch(`${BASE_URL}/resources`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${requesterToken}`
+      },
       body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 2,
-        purpose: 'Small meeting',
-        pickupDate: '2026-12-10',
-        expectedReturnDate: '2026-12-14',
-        wouldHavePurchased: true
+        itemName: `${testPrefix}_OWN_RESOURCE`,
+        category: 'Electronics',
+        description: 'Own resource negative test',
+        totalQuantity: 5,
+        condition: 'Good',
+        location: 'Test Location',
+        estimatedUnitCost: 100,
+        estimatedUnitWeight: 1
       })
     });
-    const req3Id = (await req3Res.json()).data?.requestId;
-    if (req3Id) createdRequestIds.push(req3Id);
 
-    const rejectRes = await fetch(`${BASE_URL}/borrowing-requests/${req3Id}/reject`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ownerToken}` },
-      body: JSON.stringify({ reason: 'Maintenance scheduled' })
-    });
-    assert(rejectRes.status === 200, 'Owner rejects pending request (200 OK)');
+    const ownResourceBody = await ownResourceRes.json();
+    const ownResourceId = ownResourceBody.data?.resourceId;
 
-    // 6. Simultaneous Double-Approval Concurrency Test (NFR6)
-    console.log('\n--- Step 5: Simultaneous Approval Concurrency Test (NFR6) ---');
-    const cReq1 = await (await fetch(`${BASE_URL}/borrowing-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
-      body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 6,
-        purpose: 'Concurrent test A',
-        pickupDate: '2026-12-10',
-        expectedReturnDate: '2026-12-14',
-        wouldHavePurchased: true
-      })
-    })).json();
-    const cReq2 = await (await fetch(`${BASE_URL}/borrowing-requests`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${borrowerToken}` },
-      body: JSON.stringify({
-        resourceId,
-        eventId,
-        quantity: 6,
-        purpose: 'Concurrent test B',
-        pickupDate: '2026-12-10',
-        expectedReturnDate: '2026-12-14',
-        wouldHavePurchased: true
-      })
-    })).json();
-    if (cReq1.data?.requestId) createdRequestIds.push(cReq1.data.requestId);
-    if (cReq2.data?.requestId) createdRequestIds.push(cReq2.data.requestId);
+    assert(
+      ownResourceRes.status === 201 && Boolean(ownResourceId),
+      'Create requester own resource for negative test',
+      JSON.stringify(ownResourceBody)
+    );
 
-    const [r1, r2] = await Promise.all([
-      fetch(`${BASE_URL}/borrowing-requests/${cReq1.data.requestId}/approve`, {
+    if (ownResourceId) {
+      const ownResourceRequestRes = await fetch(
+        `${BASE_URL}/borrowing-requests`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${requesterToken}`
+          },
+          body: JSON.stringify({
+            ...requestPayload,
+            resourceId: ownResourceId
+          })
+        }
+      );
+
+    const ownResourceRequestBody = await ownResourceRequestRes.json();
+
+    assert(
+    ownResourceRequestRes.status === 403 &&
+    ownResourceRequestBody.error?.code === 'FORBIDDEN',
+    'Requester cannot borrow its own resource',
+    JSON.stringify(ownResourceRequestBody)
+    );}
+
+    console.log(`Borrowing Request ID: ${requestId}`);
+
+
+    // Step 8: BE-07 Approve / Reject Borrowing Request
+    console.log('\n--- Step 8: BE-07 Approve / Reject Borrowing Request ---');
+
+    // 8.1 Requester must not be allowed to approve the request
+    const requesterApproveRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/approve`,
+      {
         method: 'PATCH',
-        headers: { Authorization: `Bearer ${ownerToken}` }
-      }),
-      fetch(`${BASE_URL}/borrowing-requests/${cReq2.data.requestId}/approve`, {
-        method: 'PATCH',
-        headers: { Authorization: `Bearer ${ownerToken}` }
-      })
-    ]);
-    const statuses = [r1.status, r2.status].sort();
-    assert(
-      statuses[0] === 200 && statuses[1] === 409,
-      `Simultaneous approvals on 9 units (6+6=12): one 200 OK, one 409 conflict (got ${statuses.join(', ')})`
-    );
-    const afterConcurrent = await (await fetch(`${BASE_URL}/resources/${resourceId}`)).json();
-    assert(
-      afterConcurrent.data?.availableQuantity === 3 && afterConcurrent.data?.reservedQuantity === 6,
-      'Available quantity stayed >= 0 after concurrent transaction (avail=3, reserved=6)'
+        headers: {
+          Authorization: `Bearer ${requesterToken}`
+        }
+      }
     );
 
-    console.log('\n============================================================');
-    console.log(`BORROWING TEST SUMMARY: ${passedCount} PASSED, ${failedCount} FAILED`);
-    console.log('============================================================\n');
+    const requesterApproveBody = await requesterApproveRes.json();
+
+    assert(
+      requesterApproveRes.status === 403,
+      'Requester cannot approve borrowing request',
+      JSON.stringify(requesterApproveBody)
+    );
+
+    // 8.2 Owner approves the request
+    const approveRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/approve`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`
+        }
+      }
+    );
+
+    const approveBody = await approveRes.json();
+
+    assert(
+      approveRes.status === 200,
+      'Owner approves borrowing request',
+      JSON.stringify(approveBody)
+    );
+
+    assert(
+      approveBody.data?.status === 'Approved',
+      'Request status changes to Approved',
+      JSON.stringify(approveBody)
+    );
+
+    // 8.3 Verify inventory after approval
+    const resourceAfterApproval = await db
+      .collection('Resources')
+      .doc(resourceId)
+      .get();
+
+    const inventoryAfterApproval = resourceAfterApproval.data();
+
+    assert(
+      inventoryAfterApproval.availableQuantity === 7,
+      'Available quantity decreases from 10 to 7'
+    );
+
+    assert(
+      inventoryAfterApproval.reservedQuantity === 3,
+      'Reserved quantity increases from 0 to 3'
+    );
+
+    assert(
+      inventoryAfterApproval.borrowedQuantity === 0,
+      'Borrowed quantity remains 0 after approval'
+    );
+
+    assert(
+      inventoryAfterApproval.totalQuantity === 10,
+      'Total quantity remains 10 after approval'
+    );
+
+    // 8.4 Verify duplicate approval is rejected
+    const duplicateApproveRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/approve`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`
+        }
+      }
+    );
+
+    const duplicateApproveBody = await duplicateApproveRes.json();
+
+    assert(
+      duplicateApproveRes.status === 409 &&
+      duplicateApproveBody.error?.code === 'REQUEST_ALREADY_PROCESSED',
+      'Duplicate approval is rejected',
+      JSON.stringify(duplicateApproveBody)
+    );
+
+    // 8.5 Create another Pending request for rejection test
+    const rejectRequestRes = await fetch(
+      `${BASE_URL}/borrowing-requests`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${requesterToken}`
+        },
+        body: JSON.stringify({
+          ...requestPayload,
+          quantity: 1,
+          remarks: 'TEST_BORROWING rejection test'
+        })
+      }
+    );
+
+    const rejectRequestBody = await rejectRequestRes.json();
+    const rejectRequestId = rejectRequestBody.data?.requestId;
+
+    assert(
+      rejectRequestRes.status === 201 && Boolean(rejectRequestId),
+      'Create second Pending request for rejection test',
+      JSON.stringify(rejectRequestBody)
+    );
+
+    // 8.6 Owner rejects the second request
+    if (rejectRequestId) {
+      const rejectRes = await fetch(
+        `${BASE_URL}/borrowing-requests/${rejectRequestId}/reject`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${ownerToken}`
+          },
+          body: JSON.stringify({
+            rejectionRemarks: 'Rejected for integration testing'
+          })
+        }
+      );
+
+      const rejectBody = await rejectRes.json();
+
+      assert(
+        rejectRes.status === 200,
+        'Owner rejects borrowing request',
+        JSON.stringify(rejectBody)
+      );
+
+      assert(
+        rejectBody.data?.status === 'Rejected',
+        'Request status changes to Rejected',
+        JSON.stringify(rejectBody)
+      );
+
+      // 8.7 Verify rejection does not change inventory
+      const resourceAfterRejection = await db
+        .collection('Resources')
+        .doc(resourceId)
+        .get();
+
+      const inventoryAfterRejection = resourceAfterRejection.data();
+
+      assert(
+        inventoryAfterRejection.availableQuantity === 7,
+        'Available quantity remains 7 after rejection'
+      );
+
+      assert(
+        inventoryAfterRejection.reservedQuantity === 3,
+        'Reserved quantity remains 3 after rejection'
+      );
+
+      assert(
+        inventoryAfterRejection.borrowedQuantity === 0,
+        'Borrowed quantity remains 0 after rejection'
+      );
+    }
+
+
+
+    // Step 9: BE-08 Get Borrowing Requests
+    console.log('\n--- Step 9: BE-08 Get Borrowing Requests ---');
+
+    // 9.1 Requester retrieves their borrowing requests
+    const requesterListRes = await fetch(
+      `${BASE_URL}/borrowing-requests`,
+      {
+        headers: {
+          Authorization: `Bearer ${requesterToken}`
+        }
+      }
+    );
+
+    const requesterListBody = await requesterListRes.json();
+    const requesterRequests = requesterListBody.data?.requests || [];
+
+    assert(
+      requesterListRes.status === 200,
+      'Requester can retrieve borrowing request list',
+      JSON.stringify(requesterListBody)
+    );
+
+    assert(
+      requesterRequests.some((r) => r.requestId === requestId),
+      'Requester list contains their submitted request'
+    );
+
+    // 9.2 Owner retrieves requests involving their resources
+    const ownerListRes = await fetch(
+      `${BASE_URL}/borrowing-requests`,
+      {
+        headers: {
+          Authorization: `Bearer ${ownerToken}`
+        }
+      }
+    );
+
+    const ownerListBody = await ownerListRes.json();
+    const ownerRequests = ownerListBody.data?.requests || [];
+
+    assert(
+      ownerListRes.status === 200,
+      'Owner can retrieve borrowing request list',
+      JSON.stringify(ownerListBody)
+    );
+
+    assert(
+      ownerRequests.some((r) => r.requestId === requestId),
+      'Owner list contains the request for their resource'
+    );
+
+    // 9.3 Admin retrieves borrowing requests
+    const adminListRes = await fetch(
+      `${BASE_URL}/borrowing-requests`,
+      {
+        headers: {
+          Authorization: `Bearer ${adminToken}`
+        }
+      }
+    );
+
+    const adminListBody = await adminListRes.json();
+
+    assert(
+      adminListRes.status === 200,
+      'Admin can retrieve borrowing request list',
+      JSON.stringify(adminListBody)
+    );
+
+    // 9.4 Filter by status and resourceId
+    const filterUrl = new URL(`${BASE_URL}/borrowing-requests`);
+
+    filterUrl.searchParams.set('status', 'Approved');
+    filterUrl.searchParams.set('resourceId', resourceId);
+
+    const filterRes = await fetch(filterUrl, {
+      headers: {
+        Authorization: `Bearer ${ownerToken}`
+      }
+    });
+
+    const filterBody = await filterRes.json();
+    const filteredRequests = filterBody.data?.requests || [];
+
+    assert(
+      filterRes.status === 200,
+      'Filter requests by status and resourceId',
+      JSON.stringify(filterBody)
+    );
+
+    assert(
+      filteredRequests.length === 1 &&
+      filteredRequests[0].requestId === requestId &&
+      filteredRequests[0].status === 'Approved',
+      'Filtered result contains only the matching Approved request'
+    );
+
+    // 9.5 Pagination
+    const paginationRes = await fetch(
+      `${BASE_URL}/borrowing-requests?page=1&limit=1`,
+      {
+        headers: {
+          Authorization: `Bearer ${requesterToken}`
+        }
+      }
+    );
+
+    const paginationBody = await paginationRes.json();
+    const pagination = paginationBody.data?.pagination;
+    const paginatedRequests = paginationBody.data?.requests || [];
+
+    assert(
+      paginationRes.status === 200,
+      'Pagination request returns 200',
+      JSON.stringify(paginationBody)
+    );
+
+    assert(
+      pagination?.page === 1 &&
+      pagination?.limit === 1 &&
+      paginatedRequests.length === 1,
+      'Pagination returns one request for page 1'
+    );
+
+    // 9.6 Requester retrieves request detail
+    const requesterDetailRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${requesterToken}`
+        }
+      }
+    );
+
+    const requesterDetailBody = await requesterDetailRes.json();
+
+    assert(
+      requesterDetailRes.status === 200,
+      'Requester can retrieve request detail',
+      JSON.stringify(requesterDetailBody)
+    );
+
+    assert(
+      requesterDetailBody.data?.requestId === requestId,
+      'Requester detail contains the correct request'
+    );
+
+    // 9.7 Owner retrieves request detail
+    const ownerDetailRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${ownerToken}`
+        }
+      }
+    );
+
+    const ownerDetailBody = await ownerDetailRes.json();
+
+    assert(
+      ownerDetailRes.status === 200,
+      'Owner can retrieve request detail',
+      JSON.stringify(ownerDetailBody)
+    );
+
+    // 9.8 Create an unrelated Club for access-control test
+    const unrelatedEmail = `unrelated_${timestamp}@eventpool.test`;
+    const unrelatedPassword = 'Password123!';
+
+    const unrelatedClubRes = await fetch(`${BASE_URL}/admin/clubs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${adminToken}`
+      },
+      body: JSON.stringify({
+        clubName: `${testPrefix}_UNRELATED`,
+        description: 'Unrelated club for access control test',
+        contactEmail: unrelatedEmail,
+        picContactNum: '0115566778',
+        password: unrelatedPassword
+      })
+    });
+
+    const unrelatedClubBody = await unrelatedClubRes.json();
+
+    assert(
+      unrelatedClubRes.status === 201,
+      'Create unrelated Club for access-control test',
+      JSON.stringify(unrelatedClubBody)
+    );
+
+    if (unrelatedClubRes.status === 201) {
+      const unrelatedToken = await getIdTokenWithPassword(
+        unrelatedEmail,
+        unrelatedPassword
+      );
+
+      // 9.9 Unrelated Club must not access request detail
+      const unauthorizedDetailRes = await fetch(
+        `${BASE_URL}/borrowing-requests/${requestId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${unrelatedToken}`
+          }
+        }
+      );
+
+      const unauthorizedDetailBody = await unauthorizedDetailRes.json();
+
+      assert(
+        unauthorizedDetailRes.status === 403 &&
+        unauthorizedDetailBody.error?.code === 'FORBIDDEN',
+        'Unrelated Club cannot retrieve request detail',
+        JSON.stringify(unauthorizedDetailBody)
+      );
+    }
+
+    // 9.10 Non-existent request returns 404
+    const missingDetailRes = await fetch(
+      `${BASE_URL}/borrowing-requests/DOES_NOT_EXIST_TEST`,
+      {
+        headers: {
+          Authorization: `Bearer ${requesterToken}`
+        }
+      }
+    );
+
+    const missingDetailBody = await missingDetailRes.json();
+
+    assert(
+      missingDetailRes.status === 404 &&
+      missingDetailBody.error?.code === 'REQUEST_NOT_FOUND',
+      'Non-existent request returns 404',
+      JSON.stringify(missingDetailBody)
+    );
+
+
+    // Step 10: BE-09 Mark Resource as Borrowed
+    console.log('\n--- Step 10: BE-09 Mark Resource as Borrowed ---');
+
+    // 10.1 Requester cannot mark resource as borrowed
+    const requesterBorrowRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/borrow`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${requesterToken}`
+        }
+      }
+    );
+
+    const requesterBorrowBody = await requesterBorrowRes.json();
+
+    assert(
+      requesterBorrowRes.status === 403,
+      'Requester cannot mark resource as borrowed',
+      JSON.stringify(requesterBorrowBody)
+    );
+
+    // 10.2 Owner marks resource as borrowed
+    const markBorrowedRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/borrow`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`
+        }
+      }
+    );
+
+    const markBorrowedBody = await markBorrowedRes.json();
+
+    assert(
+      markBorrowedRes.status === 200,
+      'Owner marks resource as borrowed',
+      JSON.stringify(markBorrowedBody)
+    );
+
+    assert(
+      markBorrowedBody.data?.status === 'Borrowed',
+      'Request status changes to Borrowed'
+    );
+
+    // 10.3 Verify inventory after marking as borrowed
+    const resourceAfterBorrowed = await db
+      .collection('Resources')
+      .doc(resourceId)
+      .get();
+
+    const borrowedInventory = resourceAfterBorrowed.data();
+
+    assert(
+      borrowedInventory.availableQuantity === 7,
+      'Available quantity remains 7'
+    );
+
+    assert(
+      borrowedInventory.reservedQuantity === 0,
+      'Reserved quantity decreases from 3 to 0'
+    );
+
+    assert(
+      borrowedInventory.borrowedQuantity === 3,
+      'Borrowed quantity increases from 0 to 3'
+    );
+
+    assert(
+      borrowedInventory.totalQuantity === 10,
+      'Total quantity remains 10'
+    );
+
+    assert(
+      borrowedInventory.status === 'Available',
+      'Resource status remains Available when available quantity is positive'
+    );
+
+    // 10.4 Duplicate mark as borrowed must be rejected
+    const duplicateBorrowRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/borrow`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`
+        }
+      }
+    );
+
+    const duplicateBorrowBody = await duplicateBorrowRes.json();
+
+    assert(
+      duplicateBorrowRes.status === 409 &&
+      duplicateBorrowBody.error?.code === 'INVALID_STATUS_TRANSITION',
+      'Duplicate mark as borrowed is rejected',
+      JSON.stringify(duplicateBorrowBody)
+    );
+
+
+    // Step 11: BE-10 Submit Return and Complete Borrowing Request
+    console.log('\n--- Step 11: BE-10 Return and Complete ---');
+
+    const actualReturnDate = '2026-12-12T17:00:00.000Z';
+
+    // 11.1 Owner cannot submit return on behalf of requester
+    const ownerReturnRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/return`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          actualReturnDate,
+          remarks: 'Return submitted by owner'
+        })
+      }
+    );
+
+    const ownerReturnBody = await ownerReturnRes.json();
+
+    assert(
+      ownerReturnRes.status === 403,
+      'Owner cannot submit return on behalf of requester',
+      JSON.stringify(ownerReturnBody)
+    );
+
+    // 11.2 Requester submits return
+    const submitReturnRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/return`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${requesterToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          actualReturnDate,
+          remarks: 'All items returned to owner'
+        })
+      }
+    );
+
+    const submitReturnBody = await submitReturnRes.json();
+
+    assert(
+      submitReturnRes.status === 200,
+      'Requester successfully submits return',
+      JSON.stringify(submitReturnBody)
+    );
+
+    assert(
+      submitReturnBody.data?.status === 'Return Pending',
+      'Request status changes to Return Pending'
+    );
+
+    // 11.3 Verify return information and remarks
+    const requestAfterReturn = await db
+      .collection('BorrowingRequests')
+      .doc(requestId)
+      .get();
+
+    const returnData = requestAfterReturn.data();
+
+    assert(
+      returnData.status === 'Return Pending',
+      'Firestore request status is Return Pending'
+    );
+
+    assert(
+      returnData.actualReturnDate === actualReturnDate,
+      'Actual return date is saved'
+    );
+
+    assert(
+      returnData.remarks === 'TEST_BORROWING request',
+      'Original requester remarks are preserved'
+    );
+
+    assert(
+      returnData.returnRemarks === 'All items returned to owner',
+      'Return remarks are saved separately'
+    );
+
+    // 11.4 Inventory must not change when requester submits return
+    const inventoryAfterReturn = (
+      await db.collection('Resources').doc(resourceId).get()
+    ).data();
+
+    assert(
+      inventoryAfterReturn.totalQuantity === 10 &&
+      inventoryAfterReturn.availableQuantity === 7 &&
+      inventoryAfterReturn.reservedQuantity === 0 &&
+      inventoryAfterReturn.borrowedQuantity === 3,
+      'Inventory remains unchanged while return is pending',
+      JSON.stringify(inventoryAfterReturn)
+    );
+
+        // 11.4.1 Duplicate return submission must be rejected
+    const duplicateReturnRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/return`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${requesterToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          actualReturnDate,
+          remarks: 'Duplicate return submission'
+        })
+      }
+    );
+
+    const duplicateReturnBody = await duplicateReturnRes.json();
+
+    assert(
+      duplicateReturnRes.status === 409 &&
+      duplicateReturnBody.error?.code === 'INVALID_STATUS_TRANSITION',
+      'Duplicate return submission is rejected',
+      JSON.stringify(duplicateReturnBody)
+    );
+
+    // 11.5 Requester cannot complete return verification
+    const requesterCompleteRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/complete`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${requesterToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          returnedQuantity: 2,
+          usableQuantity: 2,
+          damagedQuantity: 0,
+          missingQuantity: 1,
+          returnCondition: 'Good',
+          remarks: 'Verified by requester'
+        })
+      }
+    );
+
+    const requesterCompleteBody = await requesterCompleteRes.json();
+
+    assert(
+      requesterCompleteRes.status === 403,
+      'Requester cannot complete return verification',
+      JSON.stringify(requesterCompleteBody)
+    );
+
+    // 11.6 Invalid return quantities must be rejected
+    const invalidCompleteRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/complete`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          returnedQuantity: 3,
+          usableQuantity: 2,
+          damagedQuantity: 0,
+          missingQuantity: 1,
+          returnCondition: 'Good',
+          remarks: 'Invalid quantity test'
+        })
+      }
+    );
+
+    const invalidCompleteBody = await invalidCompleteRes.json();
+
+    assert(
+      invalidCompleteRes.status === 400 &&
+      invalidCompleteBody.error?.code === 'INVALID_RETURN_QUANTITY',
+      'Inconsistent return quantities are rejected',
+      JSON.stringify(invalidCompleteBody)
+    );
+
+    // 11.7 Owner completes return verification
+    const completeRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/complete`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          returnedQuantity: 2,
+          usableQuantity: 2,
+          damagedQuantity: 0,
+          missingQuantity: 1,
+          returnCondition: 'Good',
+          remarks: 'Verified by owner'
+        })
+      }
+    );
+
+    const completeBody = await completeRes.json();
+
+    assert(
+      completeRes.status === 200,
+      'Owner successfully completes return verification',
+      JSON.stringify(completeBody)
+    );
+
+    assert(
+      completeBody.data?.status === 'Completed',
+      'Response status is Completed'
+    );
+
+    // 11.8 Verify final borrowing request record
+    const completedRequest = (
+      await db.collection('BorrowingRequests').doc(requestId).get()
+    ).data();
+
+    assert(
+      completedRequest.status === 'Completed',
+      'Firestore request status is Completed'
+    );
+
+    assert(
+      completedRequest.returnedQuantity === 2 &&
+      completedRequest.usableQuantity === 2 &&
+      completedRequest.damagedQuantity === 0 &&
+      completedRequest.missingQuantity === 1,
+      'Return quantities are saved correctly'
+    );
+
+    assert(
+      completedRequest.returnCondition === 'Good',
+      'Return condition is saved'
+    );
+
+    assert(
+      typeof completedRequest.returnVerifiedAt === 'string' &&
+      completedRequest.returnVerifiedAt.length > 0,
+      'Return verification timestamp is recorded'
+    );
+
+    assert(
+      completedRequest.remarks === 'TEST_BORROWING request',
+      'Original requester remarks remain unchanged after completion'
+    );
+
+    assert(
+      completedRequest.returnRemarks === 'All items returned to owner',
+      'Requester return remarks remain unchanged after completion'
+    );
+
+    assert(
+      completedRequest.verificationRemarks === 'Verified by owner',
+      'Owner verification remarks are saved separately'
+    );
+
+    // 11.9 Verify final resource inventory
+    const finalResource = (
+      await db.collection('Resources').doc(resourceId).get()
+    ).data();
+
+    assert(
+      finalResource.totalQuantity === 9,
+      'Total quantity decreases from 10 to 9'
+    );
+
+    assert(
+      finalResource.availableQuantity === 9,
+      'Available quantity increases from 7 to 9'
+    );
+
+    assert(
+      finalResource.reservedQuantity === 0,
+      'Reserved quantity remains 0'
+    );
+
+    assert(
+      finalResource.borrowedQuantity === 0,
+      'Borrowed quantity decreases from 3 to 0'
+    );
+
+    assert(
+      finalResource.status === 'Available',
+      'Final resource status is Available'
+    );
+
+    assert(
+      finalResource.totalQuantity ===
+      finalResource.availableQuantity +
+      finalResource.reservedQuantity +
+      finalResource.borrowedQuantity,
+      'Final inventory invariant is maintained'
+    );
+
+        // 11.10 Duplicate completion must be rejected
+    const duplicateCompleteRes = await fetch(
+      `${BASE_URL}/borrowing-requests/${requestId}/complete`,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${ownerToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          returnedQuantity: 2,
+          usableQuantity: 2,
+          damagedQuantity: 0,
+          missingQuantity: 1,
+          returnCondition: 'Good',
+          remarks: 'Duplicate completion test'
+        })
+      }
+    );
+
+    const duplicateCompleteBody = await duplicateCompleteRes.json();
+
+    assert(
+      duplicateCompleteRes.status === 409 &&
+      duplicateCompleteBody.error?.code === 'INVALID_STATUS_TRANSITION',
+      'Duplicate completion is rejected',
+      JSON.stringify(duplicateCompleteBody)
+    );
+
+    console.log('\n==============================================');
+    console.log(`RESULT: ${passedCount} PASSED, ${failedCount} FAILED`);
+    console.log('==============================================\n');
   } catch (err) {
-    console.error('\nFatal borrowing test execution error:', err);
+    console.error('\nFatal test error:', err);
     failedCount++;
   } finally {
-    console.log('[CLEANUP] Deleting all temporary borrowing test records and Auth users...');
-    for (const id of createdRequestIds) {
-      await db.collection('BorrowingRequests').doc(id).delete().catch(() => {});
+    console.log('[CLEANUP] Purging temporary TEST_BORROWING_* records and Auth users...');
+    try {
+      const testClubIds = new Set();
+      const clubsSnap = await db.collection('Clubs').get();
+      for (const doc of clubsSnap.docs) {
+        const d = doc.data();
+        if (d.clubName && String(d.clubName).includes(String(timestamp))) {
+          testClubIds.add(d.clubId || doc.id);
+          await doc.ref.delete().catch(() => {});
+        }
+      }
+
+      const [evtsSnap, resSnap, reqsSnap] = await Promise.all([
+        db.collection('Events').get(),
+        db.collection('Resources').get(),
+        db.collection('BorrowingRequests').get(),
+      ]);
+
+      for (const doc of evtsSnap.docs) {
+        const d = doc.data();
+        if (testClubIds.has(d.clubId) || String(d.eventName || '').includes(String(timestamp))) {
+          await doc.ref.delete().catch(() => {});
+        }
+      }
+      for (const doc of resSnap.docs) {
+        const d = doc.data();
+        if (testClubIds.has(d.clubId) || String(d.itemName || '').includes(String(timestamp))) {
+          await doc.ref.delete().catch(() => {});
+        }
+      }
+      for (const doc of reqsSnap.docs) {
+        const d = doc.data();
+        if (
+          testClubIds.has(d.ownerClubId) ||
+          testClubIds.has(d.requesterClubId) ||
+          testClubIds.has(d.borrowerClubId) ||
+          String(d.purpose || '').includes(String(timestamp)) ||
+          String(d.remarks || '').includes('TEST_BORROWING')
+        ) {
+          await doc.ref.delete().catch(() => {});
+        }
+      }
+
+      const usersList = await auth.listUsers(1000);
+      for (const u of usersList.users) {
+        if (u.email && u.email.includes(String(timestamp))) {
+          await auth.deleteUser(u.uid).catch(() => {});
+        }
+      }
+      console.log('[CLEANUP] Complete! Zero test pollution remaining.');
+    } catch (cleanupErr) {
+      console.warn('[CLEANUP] Warning:', cleanupErr.message);
     }
-    for (const id of createdEventIds) {
-      await db.collection('Events').doc(id).delete().catch(() => {});
-    }
-    for (const id of createdResourceIds) {
-      await db.collection('Resources').doc(id).delete().catch(() => {});
-    }
-    for (const id of createdClubIds) {
-      await db.collection('Clubs').doc(id).delete().catch(() => {});
-    }
-    for (const uid of createdAuthUids) {
-      await auth.deleteUser(uid).catch(() => {});
-    }
-    console.log('[CLEANUP] Clean! Zero pollution left in Firebase.');
     server.close();
     process.exit(failedCount > 0 ? 1 : 0);
   }

@@ -1,5 +1,13 @@
 import { db } from '../src/config/firebase.js';
-import { computeResourceStatus } from '../src/controllers/resourceController.js';
+import { calculateResourceStatus } from '../src/utils/resourceStatus.js';
+
+const computeResourceStatus = (resource) => {
+  try {
+    return calculateResourceStatus(resource);
+  } catch {
+    return 'Unavailable';
+  }
+};
 
 async function verifyInventory() {
   console.log('=== EventPool Firestore Inventory & Reservation Consistency Audit ===\n');

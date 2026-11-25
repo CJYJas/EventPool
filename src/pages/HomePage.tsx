@@ -49,7 +49,10 @@ export const HomePage: React.FC = () => {
     () =>
       resources
         .filter((r) => !r.archived)
-        .filter((r) => getClubById(r.clubId)?.status === 'Active')
+        .filter((r) => {
+          const club = getClubById(r.clubId);
+          return !club || club.status === 'Active';
+        })
         .slice(0, 4),
     [resources, getClubById]
   );
@@ -71,13 +74,13 @@ export const HomePage: React.FC = () => {
     const liveWeightKg = completedRequests.reduce((sum, r) => {
       const res = getResourceById(r.resourceId);
       const qty = r.verification?.reusable ?? r.requestedQuantity;
-      return sum + qty * (res?.estimatedUnitWeightKg || 1.8);
+      return sum + qty * (res?.estimatedUnitWeightKg || 0);
     }, 0);
     const liveExpenditureRM = completedRequests.reduce((sum, r) => {
       if (!r.wouldOtherwisePurchase) return sum;
       const res = getResourceById(r.resourceId);
       const qty = r.verification?.reusable ?? r.requestedQuantity;
-      return sum + qty * (res?.estimatedUnitCostRM || 65);
+      return sum + qty * (res?.estimatedUnitCostRM || 0);
     }, 0);
 
     return {
