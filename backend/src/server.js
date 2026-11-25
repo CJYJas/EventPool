@@ -9,6 +9,8 @@ import adminRoutes from './routes/adminRoutes.js';
 import clubRoutes from './routes/clubRoutes.js';
 import eventRoutes from './routes/eventRoutes.js';
 import resourceRoutes from './routes/resourceRoutes.js';
+import borrowingRoutes from './routes/borrowingRoutes.js';
+import { getSustainabilityMetrics } from './controllers/borrowingController.js';
 import { sendError, sendSuccess } from './utils/response.js';
 
 dotenv.config();
@@ -19,8 +21,14 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Trust reverse proxy headers (Render / Fly.io / Cloud Run) so req.protocol is accurate
+app.set('trust proxy', 1);
+
 // Enable CORS and body parsers
-app.use(cors());
+const allowedOrigins = process.env.CORS_ORIGIN
+  ? process.env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter(Boolean)
+  : '*';
+app.use(cors({ origin: allowedOrigins }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -42,6 +50,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/clubs', clubRoutes);
 app.use('/api/events', eventRoutes);
 app.use('/api/resources', resourceRoutes);
+app.use('/api/borrowing-requests', borrowingRoutes);
+app.get('/api/sustainability', getSustainabilityMetrics);
 
 // 404 handler for unmapped endpoints
 app.use((req, res) => {
@@ -55,8 +65,9 @@ app.use((err, req, res, next) => {
   return sendError(res, err.message || 'Internal server error', err.code || 'INTERNAL_ERROR', status);
 });
 
-// Only listen when run directly (allows importing in tests if needed)
-if (process.env.NODE_ENV !== 'test') {
+// Only listen when run directly (allows importing in tests without port conflicts)
+const isEntryPoint = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+if (isEntryPoint && process.env.NODE_ENV !== 'test') {
   app.listen(PORT, () => {
     console.log(`[EventPool API] Server running on port ${PORT}`);
     console.log(`[EventPool API] Base URL: http://localhost:${PORT}/api`);

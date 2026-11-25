@@ -1,5 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { api } from '../services/api';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import {
   INITIAL_ACCESS_REQUESTS,
   INITIAL_CLUBS,
@@ -19,7 +18,18 @@ import type {
   ResourceAvailability,
   ResourceCategory,
 } from '../types/eventpool';
-import { setUnauthorizedHandler } from '../services/api';
+import {
+  apiRequest,
+  approveBorrowRequestApi,
+  cancelBorrowRequestApi,
+  checkBackendHealth,
+  fetchBorrowRequestsApi,
+  getAuthToken,
+  markBorrowedApi,
+  rejectBorrowRequestApi,
+  setUnauthorizedHandler,
+} from '../services/api';
+import { fetchClubById, fetchClubDirectory, fetchResourcePage } from '../services/resources';
 import { describeAuthError, restoreSession, signIn, signOut, type AuthFailureCode } from '../services/auth';
 import { checkViewAccess, homeViewFor } from './viewAccess';
 
@@ -260,15 +270,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [remoteResources, setRemoteResources] = useState<Resource[]>([]);
   const [remoteClubs, setRemoteClubs] = useState<Club[]>([]);
 
-  const cacheRemoteData: AppContextValue['cacheRemoteData'] = useCallback((data) => {
-    const merge = <T extends { id: string }>(prev: T[], incoming: T[]) => {
-      const byId = new Map(prev.map((x) => [x.id, x]));
-      incoming.forEach((x) => byId.set(x.id, x));
-      return Array.from(byId.values());
-    };
-    if (data.resources?.length) setRemoteResources((prev) => merge(prev, data.resources!));
-    if (data.clubs?.length) setRemoteClubs((prev) => merge(prev, data.clubs!));
-  }, []);
+  const cacheRemoteData: AppContextValue['cacheRemoteData'] = useCallback(
+    (data: { resources?: Resource[]; clubs?: Club[] }) => {
+      const merge = <T extends { id: string }>(prev: T[], incoming: T[]) => {
+        const byId = new Map(prev.map((x) => [x.id, x]));
+        incoming.forEach((x) => byId.set(x.id, x));
+        return Array.from(byId.values());
+      };
+      if (data.resources?.length) setRemoteResources((prev) => merge(prev, data.resources!));
+      if (data.clubs?.length) setRemoteClubs((prev) => merge(prev, data.clubs!));
+    },
+    []
+  );
 
   useEffect(() => {
     try {
@@ -278,109 +291,71 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [state]);
 
-  // Synchronize with backend API when backend is running
-  useEffect(() => {
-    let active = true;
-    async function syncWithBackend() {
-      try {
-        const health = await api.health();
-        if (health.success && active) {
-          console.log('[EventPool] Connected to Backend API:', health.message);
-          const [clubsRes, resourcesRes, eventsRes] = await Promise.all([
-            api.clubs.getAll(),
-            api.resources.getAll({ limit: 100 }),
-            api.events.getAll(),
-          ]);
-
-          if (!active) return;
-
-          setState((prev) => {
-            let updatedClubs = [...prev.clubs];
-            if (clubsRes.success && Array.isArray(clubsRes.data) && clubsRes.data.length > 0) {
-              const apiClubs: Club[] = clubsRes.data.map((c: any) => ({
-                id: c.clubId,
-                name: c.clubName,
-                acronym: c.clubName.split(' ').map((w: string) => w[0]).join('').slice(0, 5).toUpperCase(),
-                categoryFocus: 'Student Activity',
-                description: c.description || '',
-                storageLocation: 'UM Campus',
-                contactEmail: c.contactEmail,
-                picPhone: c.picContactNum || '',
-                representativeName: c.clubName + ' Rep',
-                representativeEmail: c.contactEmail,
-                password: '',
-                status: c.isActive === false ? 'Inactive' : 'Active',
-                createdAt: c.createdAt || new Date().toISOString(),
-              }));
-              const apiClubIds = new Set(apiClubs.map((c) => c.id));
-              updatedClubs = [...apiClubs, ...prev.clubs.filter((c) => !apiClubIds.has(c.id))];
-            }
-
-            let updatedResources = [...prev.resources];
-            if (resourcesRes.success && resourcesRes.data?.items && resourcesRes.data.items.length > 0) {
-              const apiResources: Resource[] = resourcesRes.data.items.map((r: any) => ({
-                id: r.resourceId,
-                clubId: r.clubId,
-                name: r.itemName,
-                category: (r.category || 'Electronics') as ResourceCategory,
-                totalUnits: r.totalQuantity,
-                availableUnits: r.availableQuantity,
-                reservedUnits: r.reservedQuantity || 0,
-                borrowedUnits: r.borrowedQuantity || 0,
-                condition: (r.condition || 'Good') as any,
-                location: r.location || '',
-                description: r.description || '',
-                remarks: r.remarks || '',
-                images: r.imageURL ? [r.imageURL] : [],
-                archived: r.isArchived || false,
-                manualUnavailable: r.isTemporarilyUnavailable || false,
-                estimatedUnitCostRM: r.estimatedUnitCost,
-                estimatedUnitWeightKg: r.estimatedUnitWeight,
-                createdAt: r.createdAt || new Date().toISOString(),
-              }));
-              const apiResIds = new Set(apiResources.map((r) => r.id));
-              updatedResources = [...apiResources, ...prev.resources.filter((r) => !apiResIds.has(r.id))];
-            }
-
-            let updatedEvents = [...prev.events];
-            if (eventsRes.success && Array.isArray(eventsRes.data) && eventsRes.data.length > 0) {
-              const apiEvents: ClubEvent[] = eventsRes.data.map((e: any) => ({
-                id: e.eventId,
-                clubId: e.clubId,
-                name: e.eventName,
-                date: e.eventDate,
-                purpose: e.purpose,
-                description: e.description,
-                createdAt: e.createdAt,
-              }));
-              const apiEventIds = new Set(apiEvents.map((e) => e.id));
-              updatedEvents = [...apiEvents, ...prev.events.filter((e) => !apiEventIds.has(e.id))];
-            }
-
-            return {
-              ...prev,
-              clubs: updatedClubs,
-              resources: updatedResources,
-              events: updatedEvents,
-            };
-          });
-        }
-      } catch {
-        // Fallback silently to local state when backend is offline
-      }
-    }
-
-    syncWithBackend();
-    return () => {
-      active = false;
-    };
-  }, []);
-
   useEffect(() => {
     if (!toastMessage) return;
     const timer = window.setTimeout(() => setToastMessage(null), 3600);
     return () => window.clearTimeout(timer);
   }, [toastMessage]);
+
+  const syncBackendState = useCallback(
+    async (user: CurrentUser | null) => {
+      try {
+        const health = await checkBackendHealth();
+        if (!health.ok) return;
+
+        const [clubs, resPage] = await Promise.all([
+          fetchClubDirectory().catch((): Club[] => []),
+          fetchResourcePage({ limit: 100 }).catch(() => null),
+        ]);
+
+        if (user?.role === 'club_rep' && user.clubId) {
+          const ownClub = await fetchClubById(user.clubId).catch(() => null);
+          if (ownClub && !clubs.some((c) => c.id === ownClub.id)) {
+            clubs.unshift(ownClub);
+          }
+        }
+
+        const fetchedResources = resPage?.items || [];
+        if (clubs.length || fetchedResources.length) {
+          cacheRemoteData({ clubs, resources: fetchedResources });
+          setState((prev) => ({
+            ...prev,
+            ...(clubs.length ? { clubs } : {}),
+            ...(fetchedResources.length ? { resources: fetchedResources } : {}),
+          }));
+        }
+
+        if (user && getAuthToken()) {
+          const rawReqs = await fetchBorrowRequestsApi().catch(() => null);
+          if (Array.isArray(rawReqs)) {
+            const mapped: BorrowRequest[] = rawReqs.map((r: any) => ({
+              id: r.requestId || r.borrowingRequestId,
+              resourceId: r.resourceId,
+              ownerClubId: r.ownerClubId,
+              borrowerClubId: r.borrowerClubId,
+              eventId: r.eventId || undefined,
+              eventName: r.eventName || 'Club Event',
+              requestedQuantity: Number(r.quantity) || 1,
+              purpose: r.purpose || '',
+              wouldOtherwisePurchase: Boolean(r.wouldHavePurchased),
+              remarks: r.remarks || undefined,
+              pickupDate: r.pickupDate,
+              expectedReturnDate: r.expectedReturnDate,
+              status: r.status,
+              createdAt: r.createdAt || '',
+              updatedAt: r.updatedAt || '',
+              returnedDate: r.returnedDate || r.actualReturnDate || undefined,
+              verification: r.verification || undefined,
+            }));
+            setState((prev) => ({ ...prev, requests: mapped }));
+          }
+        }
+      } catch {
+        // Keep local state if backend sync fails
+      }
+    },
+    [cacheRemoteData]
+  );
 
   // Restore the session from a stored token by asking the backend who it belongs to.
   useEffect(() => {
@@ -389,15 +364,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (cancelled) return;
       if (user) setCurrentUser(user);
       setAuthReady(true);
+      syncBackendState(user);
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [syncBackendState]);
 
   // Any API call rejected as expired/disabled signs the user out.
   useEffect(() => {
-    setUnauthorizedHandler((reason) => {
+    setUnauthorizedHandler((reason: 'expired' | 'disabled') => {
       setCurrentUser(null);
       setCurrentView('home');
       setToastMessage(
@@ -431,6 +407,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const user = await signIn(email, password);
       setCurrentUser(user);
       setCurrentView(homeViewFor(user));
+      void syncBackendState(user);
       showToast(`Signed in as ${user.name}.`);
       return { ok: true };
     } catch (err) {
@@ -756,6 +733,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : res
       ),
     }));
+    if (getAuthToken()) {
+      void approveBorrowRequestApi(requestId)
+        .then(() => syncBackendState(currentUser))
+        .catch((err) => showToast(err?.message || 'Failed to sync approval with server.'));
+    }
     showToast('Borrowing request approved. Stock has been reserved.');
     return { ok: true };
   };
@@ -774,6 +756,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : r
       ),
     }));
+    if (getAuthToken()) {
+      void rejectBorrowRequestApi(requestId, reason)
+        .then(() => syncBackendState(currentUser))
+        .catch((err) => showToast(err?.message || 'Failed to sync rejection with server.'));
+    }
     showToast('Borrowing request rejected and saved to history.');
   };
 
@@ -799,6 +786,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             )
           : prev.resources,
     }));
+    if (getAuthToken()) {
+      void cancelBorrowRequestApi(requestId)
+        .then(() => syncBackendState(currentUser))
+        .catch((err) => showToast(err?.message || 'Failed to sync cancellation with server.'));
+    }
     showToast('Borrowing request cancelled and saved to history.');
   };
 
@@ -820,6 +812,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : res
       ),
     }));
+    if (getAuthToken()) {
+      void markBorrowedApi(requestId)
+        .then(() => syncBackendState(currentUser))
+        .catch((err) => showToast(err?.message || 'Failed to sync pickup with server.'));
+    }
     showToast('Marked as Borrowed (picked up).');
   };
 
@@ -839,6 +836,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : r
       ),
     }));
+    if (getAuthToken()) {
+      void apiRequest(`/api/borrowing-requests/${requestId}/initiate-return`, { method: 'PATCH' })
+        .then(() => syncBackendState(currentUser))
+        .catch((err) => showToast(err?.message || 'Failed to sync return with server.'));
+    }
     showToast('Return submitted. Awaiting owner verification.');
   };
 
@@ -880,6 +882,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           : res
       ),
     }));
+    if (getAuthToken()) {
+      void apiRequest(`/api/borrowing-requests/${requestId}/return`, {
+        method: 'POST',
+        body: JSON.stringify(counts),
+      })
+        .then(() => syncBackendState(currentUser))
+        .catch((err) => showToast(err?.message || 'Failed to sync return verification with server.'));
+    }
     showToast(
       `Return verified & completed. ${counts.reusable} reusable unit${counts.reusable === 1 ? '' : 's'} returned to stock.`
     );

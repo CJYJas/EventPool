@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Box,
   Calendar,
@@ -25,6 +25,7 @@ import {
   useApp,
 } from '../../context/AppContext';
 import { IMAGES } from '../../data/seedData';
+import { fetchClubById } from '../../services/resources';
 import type { ClubEvent, Resource, ResourceCategory } from '../../types/eventpool';
 
 const CATEGORY_DEFAULT_IMAGE: Record<ResourceCategory, string> = {
@@ -59,9 +60,18 @@ export const MyClubPage: React.FC = () => {
     updateEvent,
     deleteEvent,
     updateOwnClubProfile,
+    cacheRemoteData,
   } = useApp();
 
   const club = getClubById(currentUser?.clubId || 'club-pekom');
+
+  useEffect(() => {
+    if (currentUser?.role === 'club_rep' && currentUser.clubId && !club) {
+      fetchClubById(currentUser.clubId)
+        .then((fetched) => cacheRemoteData({ clubs: [fetched] }))
+        .catch(() => {});
+    }
+  }, [currentUser?.role, currentUser?.clubId, club, cacheRemoteData]);
   const isOwnRep =
     currentUser?.role === 'club_rep' && currentUser.clubId === club?.id;
 

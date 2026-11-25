@@ -86,9 +86,9 @@ export const HomePage: React.FC = () => {
       totalResources,
       pendingRequests,
       completedCount: completedRequests.length,
-      reusedWeightKg: Math.round(18 + Math.max(0, liveWeightKg - 130)),
-      itemsReused: 144 + Math.max(0, liveReusedItems - 46),
-      expenditureAvoidedRM: 6600 + Math.max(0, Math.round(liveExpenditureRM - 4500)),
+      reusedWeightKg: Math.round(liveWeightKg),
+      itemsReused: liveReusedItems,
+      expenditureAvoidedRM: Math.round(liveExpenditureRM),
     };
   }, [clubs, resources, requests, getResourceById]);
 
@@ -312,7 +312,9 @@ export const HomePage: React.FC = () => {
                       <p className="text-xs text-[#4A554E] mt-0.5">
                         {currentUser.role === 'admin'
                           ? 'UM System Administrator'
-                          : `${userClub?.acronym} · ${userClub?.name}`}
+                          : userClub
+                            ? `${userClub.acronym} · ${userClub.name}`
+                            : currentUser.email}
                       </p>
                     </div>
                     <span className="w-10 h-10 rounded-xl bg-[#DCE7D8] text-[#2D4A35] flex items-center justify-center shrink-0">
